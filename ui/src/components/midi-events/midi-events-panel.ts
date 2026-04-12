@@ -1,0 +1,454 @@
+import { LitElement, html, css } from 'lit';
+import { customElement, property, state, query } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
+import { DocumentSnapshot, TrackSnapshot } from '../../models/document';
+import { CoreBridge } from '../../bridge/coreBridge';
+import { pitchName } from '../../models/pitch';
+import { GM_FAMILIES, gmProgramName, isPercussionChannel } from '../../models/gmPrograms';
+import { CLEFS, CLEF_ORDER, clefDef } from '../../models/clef';
+import '../common/value-field';
+
+type EventKind = 'Note' | 'CC' | 'PitchBend' | 'ProgramChange';
+
+interface PanelEvent {
+    kind: EventKind;
+    tick: number;
+    trackId: string;
+    trackName: string;
+    trackIdx: number;
+    // Note only
+    noteId?: string;
+    pitch?: number;
+    velocity?: number;
+    durationTicks?: number;
+    // CC / pitch bend / program change
+    controller?: number;
+    value?: number;
+    program?: number;
+}
+
+const ALL_TRACKS = -1;
+
+@customElement('mc-midi-events-panel')
+export class MidiEventsPanel extends LitElement {
+    @property({ type: Object }) doc?: DocumentSnapshot;
+
+    // Which track's events are listed, and whose parameters the header edits.
+    @state() private trackFilter = ALL_TRACKS;
+
+    @query('#instrument') private instrumentSelect?: HTMLSelectElement;
+    @query('#clef') private clefSelect?: HTMLSelectElement;
+
+    // Which field held focus going into this update, so it can be restored if
+    // the update moved its row. See restoreFocus().
+    private focusMemo: { key: string; index: number } | null = null;
+
+    willUpdate() {
+        this.focusMemo = this.findFocusedCell();
+    }
+
+    updated() {
+        this.syncInstrumentSelect();
+        this.restoreFocus();
+    }
+
+    // Once a <select> has a user-set value, re-rendering its <option> list with
+    // different `selected` attributes does not move the selection. Undo/redo and
+    // any other external change therefore need an explicit resync, or the
+    // dropdown keeps showing the instrument the user last picked by hand.
+    private syncInstrumentSelect() {
+        const track = this.selectedTrack;
+        if (!track) return;
+        if (this.instrumentSelect) {
+            const want = String(this.trackProgram(track));
+            if (this.instrumentSelect.value !== want) this.instrumentSelect.value = want;
+        }
+        if (this.clefSelect) {
+            const want = clefDef(track.clef).name;
+            if (this.clefSelect.value !== want) this.clefSelect.value = want;
+        }
+    }
+
+    private findFocusedCell(): { key: string; index: number } | null {
+        const active = this.shadowRoot?.activeElement as HTMLElement | null;
+        if (!active || active.tagName !== 'MC-VALUE-FIELD') return null;
+        const row = active.closest('tr');
+        const key = row?.dataset.key;
+        if (!row || !key) return null;
+        return { key, index: [...row.querySelectorAll('mc-value-field')].indexOf(active) };
+    }
+
+    // Editing a tick re-sorts the table, and relocating a row in the DOM blurs
+    // whatever it contains — so the caret would be dropped after every step that
+    // crossed another event. Put it back on the same field of the same event.
+    private restoreFocus() {
+        const memo = this.focusMemo;
+        this.focusMemo = null;
+        if (!memo || memo.index < 0) return;
+
+        const row = this.shadowRoot?.querySelector(`tr[data-key="${memo.key}"]`);
+        const field = row?.querySelectorAll('mc-value-field')[memo.index] as
+            (HTMLElement & { shadowRoot: ShadowRoot | null }) | undefined;
+        const input = field?.shadowRoot?.querySelector('input');
+        if (input && field!.shadowRoot!.activeElement !== input) input.focus();
+    }
+
+    static styles = css`
+        :host {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            background: #1e1e1e;
+            min-height: 0;
+        }
+
+        /* ── Track parameter bar ─────────────────────────────────────────── */
+        .track-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 5px 10px;
+            background: #252526;
+            border-bottom: 1px solid #333;
+            font-size: 0.78rem;
+            color: #bbb;
+            flex-wrap: wrap;
+        }
+        .track-bar label { color: #8a8a8a; }
+        .field-group { display: flex; align-items: center; gap: 4px; }
+        select, input.name {
+            background: #3c3c3c;
+            border: 1px solid #4a4a4a;
+            color: #ddd;
+            font: inherit;
+            padding: 2px 4px;
+            border-radius: 2px;
+        }
+        input.name { width: 140px; }
+        input.name:focus, select:focus { outline: none; border-color: #007acc; }
+        select.instrument { max-width: 230px; }
+        select.clef { max-width: 190px; }
+        .chan-field { width: 46px; }
+        .hint {
+            color: #6f6f6f;
+            font-size: 0.72rem;
+            margin-left: auto;
+            white-space: nowrap;
+        }
+        kbd {
+            background: #333;
+            border: 1px solid #4a4a4a;
+            border-radius: 2px;
+            padding: 0 3px;
+            font-family: inherit;
+            font-size: 0.95em;
+        }
+
+        /* ── Event table ─────────────────────────────────────────────────── */
+        .table-container { flex: 1; overflow-y: auto; min-height: 0; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+            color: #ccc;
+            text-align: left;
+        }
+        th {
+            background: #2d2d2d;
+            padding: 5px 10px;
+            border-bottom: 1px solid #444;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            color: #eee;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        td {
+            padding: 2px 10px;
+            border-bottom: 1px solid #2a2a2a;
+            white-space: nowrap;
+        }
+        tr:hover { background: #262829; }
+        tr:hover td { color: #fff; }
+        .type-note { color: #4ec9b0; }
+        .type-cc   { color: #dcdcaa; }
+        .type-pb   { color: #c586c0; }
+        .type-pc   { color: #569cd6; }
+        .read-only { color: #8a8a8a; }
+        .empty { padding: 16px; color: #666; font-size: 0.85rem; }
+
+        col.c-tick  { width: 96px; }
+        col.c-track { width: 130px; }
+        col.c-type  { width: 110px; }
+        col.c-d1    { width: 140px; }
+        col.c-d2    { width: 110px; }
+        col.c-dur   { width: 96px; }
+    `;
+
+    // ─── Event collection ────────────────────────────────────────────────────
+
+    private collectEvents(): PanelEvent[] {
+        if (!this.doc) return [];
+        const events: PanelEvent[] = [];
+
+        this.doc.tracks.forEach((track, trackIdx) => {
+            if (this.trackFilter !== ALL_TRACKS && this.trackFilter !== trackIdx) return;
+            const base = { trackId: track.id, trackName: track.name, trackIdx };
+
+            for (const n of track.notes) {
+                events.push({
+                    ...base, kind: 'Note', tick: n.startTick, noteId: String(n.id),
+                    pitch: n.pitch, velocity: n.velocity, durationTicks: n.durationTicks,
+                });
+            }
+            for (const cc of track.controllerEvents) {
+                events.push({ ...base, kind: 'CC', tick: cc.tick, controller: cc.controller, value: cc.value });
+            }
+            for (const pb of track.pitchBends) {
+                events.push({ ...base, kind: 'PitchBend', tick: pb.tick, value: pb.value });
+            }
+            for (const pc of track.programChanges) {
+                events.push({ ...base, kind: 'ProgramChange', tick: pc.tick, program: pc.program });
+            }
+        });
+
+        events.sort((a, b) => a.tick - b.tick || a.trackIdx - b.trackIdx);
+        return events;
+    }
+
+    // ─── Core commands ───────────────────────────────────────────────────────
+
+    private async send(command: string, payload: Record<string, unknown>) {
+        if (!this.doc) return;
+        try {
+            await CoreBridge.sendCommand(command, { documentId: this.doc.id, ...payload });
+        } catch (err) {
+            console.error(`${command} failed`, err);
+        }
+    }
+
+    private editNote(ev: PanelEvent, field: 'tick' | 'duration' | 'pitch' | 'velocity', value: number) {
+        const target = { trackId: parseInt(ev.trackId), noteId: parseInt(ev.noteId!) };
+        switch (field) {
+            case 'tick':     return this.send('move_note',   { ...target, tick: value });
+            case 'duration': return this.send('resize_note', { ...target, duration: value });
+            case 'pitch':    return this.send('update_note', { ...target, pitch: value });
+            case 'velocity': return this.send('update_note', { ...target, velocity: value });
+        }
+    }
+
+    // ─── Track parameter bar ─────────────────────────────────────────────────
+
+    private get selectedTrack(): TrackSnapshot | undefined {
+        if (!this.doc || this.trackFilter === ALL_TRACKS) return undefined;
+        return this.doc.tracks[this.trackFilter];
+    }
+
+    // The track's instrument is the program change at tick 0; absent means the
+    // MIDI default (program 0).
+    private trackProgram(track: TrackSnapshot): number {
+        return track.programChanges.find(pc => pc.tick === 0)?.program ?? 0;
+    }
+
+    private renderTrackBar() {
+        const doc = this.doc!;
+        const track = this.selectedTrack;
+
+        return html`
+            <div class="track-bar">
+                <div class="field-group">
+                    <label for="track-filter">Track</label>
+                    <select id="track-filter" @change=${(e: Event) => {
+                        this.trackFilter = parseInt((e.target as HTMLSelectElement).value);
+                    }}>
+                        <option value=${ALL_TRACKS} ?selected=${this.trackFilter === ALL_TRACKS}>All tracks</option>
+                        ${doc.tracks.map((t, i) => html`
+                            <option value=${i} ?selected=${this.trackFilter === i}>${t.name}</option>
+                        `)}
+                    </select>
+                </div>
+
+                ${track ? this.renderTrackParams(track) : html`
+                    <span class="read-only">Pick a track to edit its name, channel and instrument.</span>
+                `}
+
+                <span class="hint">
+                    Click a value, then <kbd>↑</kbd><kbd>↓</kbd> — hold <kbd>Shift</kbd> for bigger steps
+                </span>
+            </div>
+        `;
+    }
+
+    private renderTrackParams(track: TrackSnapshot) {
+        const trackId = parseInt(track.id);
+        const percussion = isPercussionChannel(track.midiChannel);
+
+        return html`
+            <div class="field-group">
+                <label for="track-name">Name</label>
+                <input id="track-name" class="name" type="text" .value=${track.name}
+                       @change=${(e: Event) => {
+                           const name = (e.target as HTMLInputElement).value.trim();
+                           if (name && name !== track.name) this.send('rename_track', { trackId, name });
+                       }}>
+            </div>
+
+            <div class="field-group">
+                <label>Ch</label>
+                <mc-value-field class="chan-field" label="MIDI channel"
+                    .value=${track.midiChannel + 1} .min=${1} .max=${16} .step=${1} .coarse=${4}
+                    @value-change=${(e: CustomEvent<{ value: number }>) =>
+                        this.send('set_track_channel', { trackId, channel: e.detail.value - 1 })}>
+                </mc-value-field>
+            </div>
+
+            <div class="field-group">
+                <label for="clef">Clef</label>
+                <select id="clef" class="clef"
+                        title="Staff clef for this track — display only, pitches are unchanged"
+                        @change=${(e: Event) => this.send('set_track_clef', {
+                            trackId, clef: (e.target as HTMLSelectElement).value,
+                        })}>
+                    ${CLEF_ORDER.map(name => html`
+                        <option value=${name} ?selected=${clefDef(track.clef).name === name}>
+                            ${CLEFS[name].label}
+                        </option>`)}
+                </select>
+            </div>
+
+            <div class="field-group">
+                <label for="instrument">Instrument</label>
+                <select id="instrument" class="instrument"
+                        title=${percussion
+                            ? 'Channel 10 is the percussion channel — programs select a drum kit'
+                            : 'General MIDI program for this track'}
+                        @change=${(e: Event) => this.send('set_track_program', {
+                            trackId, program: parseInt((e.target as HTMLSelectElement).value),
+                        })}>
+                    ${GM_FAMILIES.map(family => html`
+                        <optgroup label=${family.name}>
+                            ${family.programs.map((name, i) => {
+                                const program = family.firstProgram + i;
+                                return html`<option value=${program}
+                                    ?selected=${this.trackProgram(track) === program}>${program + 1}. ${name}</option>`;
+                            })}
+                        </optgroup>
+                    `)}
+                </select>
+            </div>
+        `;
+    }
+
+    // ─── Rows ────────────────────────────────────────────────────────────────
+
+    private renderRow(ev: PanelEvent) {
+        const ppqn = this.doc?.ppqn ?? 480;
+        // Steps for tick/duration are musical, not per-tick: a sixteenth by
+        // default, a quarter with Shift.
+        const tickStep = Math.max(1, Math.floor(ppqn / 4));
+
+        if (ev.kind !== 'Note') {
+            return html`
+                <tr data-key=${this.eventKey(ev)}>
+                    <td class="read-only">${ev.tick}</td>
+                    <td class="read-only">${ev.trackName}</td>
+                    <td class="${ev.kind === 'CC' ? 'type-cc' : ev.kind === 'PitchBend' ? 'type-pb' : 'type-pc'}">
+                        ${ev.kind === 'ProgramChange' ? 'Program' : ev.kind}
+                    </td>
+                    <td class="read-only">${this.nonNoteData1(ev)}</td>
+                    <td class="read-only">${ev.kind === 'CC' ? `Val ${ev.value}` : ''}</td>
+                    <td></td>
+                </tr>
+            `;
+        }
+
+        return html`
+            <tr data-key=${this.eventKey(ev)}>
+                <td>
+                    <mc-value-field label="Start tick"
+                        .value=${ev.tick} .min=${0} .max=${100_000_000}
+                        .step=${tickStep} .coarse=${ppqn}
+                        @value-change=${(e: CustomEvent<{ value: number }>) =>
+                            this.editNote(ev, 'tick', e.detail.value)}>
+                    </mc-value-field>
+                </td>
+                <td class="read-only">${ev.trackName}</td>
+                <td class="type-note">Note</td>
+                <td>
+                    <mc-value-field label="Pitch"
+                        .value=${ev.pitch!} .min=${0} .max=${127} .step=${1} .coarse=${12}
+                        .formatter=${pitchName}
+                        @value-change=${(e: CustomEvent<{ value: number }>) =>
+                            this.editNote(ev, 'pitch', e.detail.value)}>
+                    </mc-value-field>
+                </td>
+                <td>
+                    <mc-value-field label="Velocity"
+                        .value=${ev.velocity!} .min=${1} .max=${127} .step=${1} .coarse=${10}
+                        @value-change=${(e: CustomEvent<{ value: number }>) =>
+                            this.editNote(ev, 'velocity', e.detail.value)}>
+                    </mc-value-field>
+                </td>
+                <td>
+                    <mc-value-field label="Duration"
+                        .value=${ev.durationTicks!} .min=${1} .max=${100_000_000}
+                        .step=${tickStep} .coarse=${ppqn}
+                        @value-change=${(e: CustomEvent<{ value: number }>) =>
+                            this.editNote(ev, 'duration', e.detail.value)}>
+                    </mc-value-field>
+                </td>
+            </tr>
+        `;
+    }
+
+    // Stable identity for a row. Notes have real ids; the other event types
+    // only carry an id in the core, so fall back to their position and payload
+    // (they are not editable here, so collisions are cosmetic at worst).
+    private eventKey(ev: PanelEvent): string {
+        if (ev.kind === 'Note') return `n:${ev.trackId}:${ev.noteId}`;
+        return `${ev.kind}:${ev.trackId}:${ev.tick}:${ev.controller ?? ''}:${ev.program ?? ''}:${ev.value ?? ''}`;
+    }
+
+    private nonNoteData1(ev: PanelEvent): string {
+        switch (ev.kind) {
+            case 'CC':            return `CC ${ev.controller}`;
+            case 'PitchBend':     return `${ev.value}`;
+            case 'ProgramChange': return `${ev.program! + 1}. ${gmProgramName(ev.program!)}`;
+            default:              return '';
+        }
+    }
+
+    render() {
+        if (!this.doc) return html`<div class="empty">No document</div>`;
+        const events = this.collectEvents();
+
+        return html`
+            ${this.renderTrackBar()}
+            <div class="table-container">
+                <table>
+                    <colgroup>
+                        <col class="c-tick"><col class="c-track"><col class="c-type">
+                        <col class="c-d1"><col class="c-d2"><col class="c-dur">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Tick</th>
+                            <th>Track</th>
+                            <th>Type</th>
+                            <th>Pitch / Data</th>
+                            <th>Velocity</th>
+                            <th>Duration</th>
+                        </tr>
+                    </thead>
+                    <!-- Keyed: editing a tick reorders the list, and an unkeyed
+                         repeat would rebind the focused field to a different
+                         event, so further arrow presses would edit the wrong
+                         note. Keying makes Lit move the row instead. -->
+                    <tbody>${repeat(events, ev => this.eventKey(ev), ev => this.renderRow(ev))}</tbody>
+                </table>
+                ${events.length === 0 ? html`<div class="empty">No events on this track.</div>` : ''}
+            </div>
+        `;
+    }
+}

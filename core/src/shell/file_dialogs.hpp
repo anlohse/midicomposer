@@ -1,0 +1,19 @@
+#pragma once
+
+#include <optional>
+#include <string>
+
+namespace midi_composer::shell {
+
+// Native modal file dialogs. Returned paths are UTF-8; nullopt means the
+// user cancelled. `filter` uses the Win32 double-NUL convention, e.g.
+// L"MIDI Files (*.mid)\0*.mid\0All Files (*.*)\0*.*\0".
+std::optional<std::string> open_file_dialog(const wchar_t* filter);
+std::optional<std::string> save_file_dialog(const wchar_t* filter, const wchar_t* default_extension);
+
+// Reports a failure that stops the app from starting. Startup errors happen
+// before there is a window to show them in, and a user who double-clicked the
+// executable would otherwise see nothing at all.
+void show_error_dialog(const std::string& title, const std::string& message);
+
+} // namespace midi_composer::shell

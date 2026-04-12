@@ -1,0 +1,22 @@
+{
+  // The app builds as ESM with bundler resolution, which leaves imports
+  // extensionless. Node cannot resolve those directly, so tests compile to
+  // CommonJS first and run against the emitted JS — no extra dependencies.
+  //
+  // Only the framework-free modules are included: the Lit components need a DOM
+  // and are covered by the end-to-end CDP runs instead.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-build",
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": [
+    "src/models/**/*",
+    "src/services/**/*",
+    "src/bridge/documentPatch.ts",
+    "tests/**/*"
+  ]
+}

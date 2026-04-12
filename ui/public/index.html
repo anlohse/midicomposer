@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI Composer</title>
+    <style>
+        body { margin: 0; background-color: #1a1a1a; color: #fff; font-family: sans-serif; overflow: hidden; }
+        .container { display: flex; flex-direction: column; height: 100vh; justify-content: center; align-items: center; }
+        h1 { font-weight: 300; }
+        .status { margin-top: 1rem; color: #888; }
+    </style>
+</head>
+<body>
+    <mc-app-root></mc-app-root>
+    <!--
+      The release build inlines this bundle into the page (see cmake/pack_ui.cmake).
+      It has to: a module is fetched with CORS, and the shipped app serves from
+      saucer's custom scheme, an opaque origin whose responses carry no
+      Access-Control-Allow-Origin — so a linked module is blocked and nothing runs.
+    -->
+    <script type="module" src="../src/app/main.ts"></script>
+</body>
+</html>

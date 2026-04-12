@@ -1,0 +1,47 @@
+# CMake and native build artifacts
+/build/
+/core/build/
+/core/build-*/
+/out/
+/bin/
+/lib/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/compile_commands.json
+/Makefile
+
+# C++ artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# UI / Node artifacts
+/node_modules/
+/ui/dist/
+/ui/.parcel-cache/
+/ui/.test-build/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE/editor files
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS junk
+.DS_Store
+Thumbs.db
+/ui/node_modules
+
+# Installer output
+/installer/output/

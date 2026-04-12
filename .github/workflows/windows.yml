@@ -1,0 +1,140 @@
+name: Windows
+
+# Named for the platform rather than "CI": the core still has Win32-only pieces
+# (native file dialogs, the executable-relative bundle path), so Linux support
+# will arrive as its own workflow rather than as another entry in a matrix here.
+
+on:
+  # Long-lived branches and tags only. Work branches are covered by their pull
+  # request, and listing both here would build every push to an open PR twice.
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches the version used locally. The UI test script relies on the test
+      # runner expanding a glob, which older releases do not do.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Typecheck UI
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: Test UI
+        working-directory: ui
+        run: npm test
+
+      # Everything the core depends on is fetched and built from source, which
+      # dominates a cold build. Keyed on the manifest that decides what those
+      # dependencies are, so a version bump invalidates it.
+      - name: Cache native dependencies
+        uses: actions/cache@v4
+        with:
+          path: core/build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('core/cmake/dependencies.cmake', 'core/CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      # Present on the hosted image today, but that is not a promise. Installed
+      # before configuring, since that is when CMake looks for it.
+      - name: Ensure NSIS is available
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if ((Get-Command makensis -ErrorAction SilentlyContinue) -or (Test-Path $nsis)) {
+            Write-Host "NSIS already present"
+          } else {
+            choco install nsis -y --no-progress
+          }
+
+      # One configuration for everything: the release UI path (packed bundle, no
+      # dev server) plus the test target. MIDI_COMPOSER_BUILD_TESTS only adds a
+      # target, so the executable this produces is the one that ships.
+      - name: Configure
+        run: >
+          cmake -S core -B core/build
+          -DMIDI_COMPOSER_DEV_WEB_UI=OFF
+          -DMIDI_COMPOSER_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build core/build --config Release
+
+      - name: Test core
+        run: ctest --test-dir core/build -C Release --output-on-failure
+
+      - name: Build installer
+        run: cmake --build core/build --config Release --target midi_composer_installer
+
+      # The two files that make up a shipped application, for anyone who wants
+      # to run it without going through the installer.
+      - name: Upload application
+        uses: actions/upload-artifact@v4
+        with:
+          name: midi-composer-windows
+          path: |
+            core/build/Release/midi_composer_app.exe
+            core/build/Release/ui.pak
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: midi-composer-installer
+          path: core/build/installer/*-setup.exe
+          if-no-files-found: error
+
+  # Tagging v<version> publishes the installer built above. The same binary that
+  # was tested, not a second build of the same source.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          name: midi-composer-installer
+          path: dist
+
+      - name: Download application
+        uses: actions/download-artifact@v4
+        with:
+          name: midi-composer-windows
+          path: dist/portable
+
+      - name: Package the portable build
+        run: cd dist/portable && zip -r ../midi-composer-${{ github.ref_name }}-windows.zip .
+
+      # Through the gh CLI, which is on the runner, rather than a third-party
+      # action: one less thing with write access to the repository.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          --repo "${{ github.repository }}"
+          --title "MIDI Composer ${{ github.ref_name }}"
+          --generate-notes
+          dist/*-setup.exe
+          dist/*.zip
