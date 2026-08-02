@@ -5,12 +5,13 @@ name: Windows
 # will arrive as its own workflow rather than as another entry in a matrix here.
 
 on:
-  # Long-lived branches and tags only. Work branches are covered by their pull
-  # request, and listing both here would build every push to an open PR twice.
+  # Tags only. This is a release pipeline, not a per-commit one: a cold build
+  # takes the better part of half an hour, and nothing here runs on ordinary
+  # pushes. Everyday checking is `npm test` and `ctest` locally.
   push:
-    branches: [main, master]
     tags: ['v*']
-  pull_request:
+  # Kept so the pipeline can be exercised without cutting a tag. A manual run on
+  # a branch builds and uploads artifacts; only a tag publishes a release.
   workflow_dispatch:
 
 concurrency:

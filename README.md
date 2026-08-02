@@ -89,16 +89,20 @@ MIDIComposer-0.1.0-setup.exe /S /CurrentUser /D=C:\Tools\MIDIComposer
 `/AllUsers` installs per-machine and needs elevation. `/D=` must come last and
 takes an unquoted path.
 
-## Continuous integration
+## Release pipeline
 
-[`.github/workflows/windows.yml`](.github/workflows/windows.yml) typechecks and
-tests the UI, builds the core in the release configuration with tests enabled,
-runs the core suite through `ctest`, and builds the installer. It uploads two
-artifacts: the application (executable plus `ui.pak`) and the installer.
+[`.github/workflows/windows.yml`](.github/workflows/windows.yml) runs on `v*`
+tags, and manually via *Run workflow*. It typechecks and tests the UI, builds the
+core in the release configuration with tests enabled, runs the core suite through
+`ctest`, and builds the installer, uploading the application (executable plus
+`ui.pak`) and the installer as artifacts.
 
-Pushing a `v*` tag publishes a GitHub release with the installer and a zip of the
+A tag also publishes a GitHub release with the installer and a zip of the
 portable build — the binaries the build job already tested, not a second build of
-the same source.
+the same source. A manual run stops at the artifacts.
+
+Nothing runs on an ordinary push, so the tests are yours to run locally before
+tagging.
 
 The workflow is named for the platform rather than `ci`, because Linux support
 will need its own: the core still has Win32-only pieces (native file dialogs, the
