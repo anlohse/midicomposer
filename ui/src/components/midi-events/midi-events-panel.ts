@@ -6,6 +6,8 @@ import { CoreBridge } from '../../bridge/coreBridge';
 import { pitchName } from '../../models/pitch';
 import { GM_FAMILIES, gmProgramName, isPercussionChannel } from '../../models/gmPrograms';
 import { CLEFS, CLEF_ORDER, clefDef } from '../../models/clef';
+import { BEND_MAX, BEND_MIN, DEFAULT_CONTROLLER, DEFAULT_CONTROLLER_VALUE,
+         bendLabel, controllerName } from '../../models/midiController';
 import '../common/value-field';
 
 type EventKind = 'Note' | 'CC' | 'PitchBend' | 'ProgramChange';
@@ -21,7 +23,9 @@ interface PanelEvent {
     pitch?: number;
     velocity?: number;
     durationTicks?: number;
-    // CC / pitch bend / program change
+    // CC / pitch bend / program change. `eventId` is the core's id for the
+    // event, which is what makes these rows addressable for editing.
+    eventId?: string;
     controller?: number;
     value?: number;
     program?: number;
@@ -178,12 +182,37 @@ export class MidiEventsPanel extends LitElement {
         .read-only { color: #8a8a8a; }
         .empty { padding: 16px; color: #666; font-size: 0.85rem; }
 
+        /* ── Add / delete ────────────────────────────────────────────────── */
+        .add-group { gap: 6px; }
+        button.add {
+            background: #333;
+            border: 1px solid #4a4a4a;
+            color: #ddd;
+            font: inherit;
+            padding: 2px 8px;
+            border-radius: 2px;
+            cursor: pointer;
+        }
+        button.add:hover:not(:disabled) { background: #3d3d3d; border-color: #007acc; }
+        button.add:disabled { color: #666; cursor: default; }
+        button.row-delete {
+            background: none;
+            border: none;
+            color: #6f6f6f;
+            font: inherit;
+            cursor: pointer;
+            padding: 0 4px;
+            border-radius: 2px;
+        }
+        button.row-delete:hover { color: #ff8080; background: #3a2a2a; }
+
         col.c-tick  { width: 96px; }
         col.c-track { width: 130px; }
         col.c-type  { width: 110px; }
         col.c-d1    { width: 140px; }
         col.c-d2    { width: 110px; }
         col.c-dur   { width: 96px; }
+        col.c-del   { width: 28px; }
     `;
 
     // ─── Event collection ────────────────────────────────────────────────────
@@ -203,13 +232,16 @@ export class MidiEventsPanel extends LitElement {
                 });
             }
             for (const cc of track.controllerEvents) {
-                events.push({ ...base, kind: 'CC', tick: cc.tick, controller: cc.controller, value: cc.value });
+                events.push({ ...base, kind: 'CC', tick: cc.tick, eventId: String(cc.id),
+                              controller: cc.controller, value: cc.value });
             }
             for (const pb of track.pitchBends) {
-                events.push({ ...base, kind: 'PitchBend', tick: pb.tick, value: pb.value });
+                events.push({ ...base, kind: 'PitchBend', tick: pb.tick, eventId: String(pb.id),
+                              value: pb.value });
             }
             for (const pc of track.programChanges) {
-                events.push({ ...base, kind: 'ProgramChange', tick: pc.tick, program: pc.program });
+                events.push({ ...base, kind: 'ProgramChange', tick: pc.tick, eventId: String(pc.id),
+                              program: pc.program });
             }
         });
 
@@ -236,6 +268,46 @@ export class MidiEventsPanel extends LitElement {
             case 'pitch':    return this.send('update_note', { ...target, pitch: value });
             case 'velocity': return this.send('update_note', { ...target, velocity: value });
         }
+    }
+
+    // Only the changed field is sent; the core leaves the rest alone.
+    private editEvent(ev: PanelEvent, patch: Record<string, number>) {
+        const target = { trackId: parseInt(ev.trackId), eventId: parseInt(ev.eventId!) };
+        const command = ev.kind === 'CC' ? 'update_controller_event' : 'update_pitch_bend';
+        return this.send(command, { ...target, ...patch });
+    }
+
+    private deleteEvent(ev: PanelEvent) {
+        const target = { trackId: parseInt(ev.trackId), eventId: parseInt(ev.eventId!) };
+        const command = ev.kind === 'CC' ? 'delete_controller_event' : 'delete_pitch_bend';
+        return this.send(command, target);
+    }
+
+    // Where a new event lands: one beat after the last one of its kind on the
+    // track, or the start if there are none. Stacking them all on tick 0 would
+    // make several identical rows that are impossible to tell apart, and the
+    // tick is editable anyway.
+    private nextTickFor(track: TrackSnapshot, kind: 'CC' | 'PitchBend'): number {
+        const ticks = kind === 'CC'
+            ? track.controllerEvents.map(e => e.tick)
+            : track.pitchBends.map(e => e.tick);
+        if (ticks.length === 0) return 0;
+        return Math.max(...ticks) + (this.doc?.ppqn ?? 480);
+    }
+
+    private addEvent(kind: 'CC' | 'PitchBend') {
+        const track = this.selectedTrack;
+        if (!track) return;
+        const trackId = parseInt(track.id);
+        const tick = this.nextTickFor(track, kind);
+        if (kind === 'CC') {
+            return this.send('create_controller_event', {
+                trackId, tick, controller: DEFAULT_CONTROLLER, value: DEFAULT_CONTROLLER_VALUE,
+            });
+        }
+        // Centre: a bend of zero is audible as nothing, which is the right
+        // starting point for something the user is about to shape.
+        return this.send('create_pitch_bend', { trackId, tick, value: 0 });
     }
 
     // ─── Track parameter bar ─────────────────────────────────────────────────
@@ -272,6 +344,20 @@ export class MidiEventsPanel extends LitElement {
                 ${track ? this.renderTrackParams(track) : html`
                     <span class="read-only">Pick a track to edit its name, channel and instrument.</span>
                 `}
+
+                <div class="field-group add-group">
+                    <!-- Disabled with "All tracks" chosen: a new event has to go
+                         on one track, and silently picking one would be worse
+                         than saying so. -->
+                    <button class="add" ?disabled=${!track}
+                            title=${track ? 'Add a control change to this track'
+                                          : 'Pick a track first'}
+                            @click=${() => this.addEvent('CC')}>+ CC</button>
+                    <button class="add" ?disabled=${!track}
+                            title=${track ? 'Add a pitch bend to this track'
+                                          : 'Pick a track first'}
+                            @click=${() => this.addEvent('PitchBend')}>+ Pitch Bend</button>
+                </div>
 
                 <span class="hint">
                     Click a value, then <kbd>↑</kbd><kbd>↓</kbd> — hold <kbd>Shift</kbd> for bigger steps
@@ -348,17 +434,70 @@ export class MidiEventsPanel extends LitElement {
         // default, a quarter with Shift.
         const tickStep = Math.max(1, Math.floor(ppqn / 4));
 
-        if (ev.kind !== 'Note') {
+        // A program change is the track's instrument, edited through the
+        // selector in the bar above; editing it here as a raw number would give
+        // two controls for one thing that could disagree.
+        if (ev.kind === 'ProgramChange') {
             return html`
                 <tr data-key=${this.eventKey(ev)}>
                     <td class="read-only">${ev.tick}</td>
                     <td class="read-only">${ev.trackName}</td>
-                    <td class="${ev.kind === 'CC' ? 'type-cc' : ev.kind === 'PitchBend' ? 'type-pb' : 'type-pc'}">
-                        ${ev.kind === 'ProgramChange' ? 'Program' : ev.kind}
-                    </td>
-                    <td class="read-only">${this.nonNoteData1(ev)}</td>
-                    <td class="read-only">${ev.kind === 'CC' ? `Val ${ev.value}` : ''}</td>
+                    <td class="type-pc">Program</td>
+                    <td class="read-only">${ev.program! + 1}. ${gmProgramName(ev.program!)}</td>
                     <td></td>
+                    <td></td>
+                    <td></td>
+                </tr>
+            `;
+        }
+
+        if (ev.kind === 'CC' || ev.kind === 'PitchBend') {
+            const isCC = ev.kind === 'CC';
+            return html`
+                <tr data-key=${this.eventKey(ev)}>
+                    <td>
+                        <mc-value-field label="Tick"
+                            .value=${ev.tick} .min=${0} .max=${100_000_000}
+                            .step=${tickStep} .coarse=${ppqn}
+                            @value-change=${(e: CustomEvent<{ value: number }>) =>
+                                this.editEvent(ev, { tick: e.detail.value })}>
+                        </mc-value-field>
+                    </td>
+                    <td class="read-only">${ev.trackName}</td>
+                    <td class=${isCC ? 'type-cc' : 'type-pb'}>${isCC ? 'CC' : 'Pitch Bend'}</td>
+                    <td>
+                        ${isCC ? html`
+                            <!-- The number is already in the field, so the
+                                 formatter's suffix carries only the name. -->
+                            <mc-value-field label="Controller number"
+                                .value=${ev.controller!} .min=${0} .max=${127} .step=${1} .coarse=${8}
+                                .formatter=${(n: number) => controllerName(n) ?? ''}
+                                @value-change=${(e: CustomEvent<{ value: number }>) =>
+                                    this.editEvent(ev, { controller: e.detail.value })}>
+                            </mc-value-field>
+                        ` : html`
+                            <mc-value-field label="Bend amount"
+                                .value=${ev.value!} .min=${BEND_MIN} .max=${BEND_MAX}
+                                .step=${64} .coarse=${1024}
+                                .formatter=${bendLabel}
+                                @value-change=${(e: CustomEvent<{ value: number }>) =>
+                                    this.editEvent(ev, { value: e.detail.value })}>
+                            </mc-value-field>
+                        `}
+                    </td>
+                    <td>
+                        ${isCC ? html`
+                            <mc-value-field label="Controller value"
+                                .value=${ev.value!} .min=${0} .max=${127} .step=${1} .coarse=${10}
+                                @value-change=${(e: CustomEvent<{ value: number }>) =>
+                                    this.editEvent(ev, { value: e.detail.value })}>
+                            </mc-value-field>
+                        ` : ''}
+                    </td>
+                    <td>
+                        <button class="row-delete" title="Delete this event"
+                                @click=${() => this.deleteEvent(ev)}>✕</button>
+                    </td>
                 </tr>
             `;
         }
@@ -398,25 +537,19 @@ export class MidiEventsPanel extends LitElement {
                             this.editNote(ev, 'duration', e.detail.value)}>
                     </mc-value-field>
                 </td>
+                <!-- Notes are deleted from the score view, where they can be
+                     selected in groups. -->
+                <td></td>
             </tr>
         `;
     }
 
-    // Stable identity for a row. Notes have real ids; the other event types
-    // only carry an id in the core, so fall back to their position and payload
-    // (they are not editable here, so collisions are cosmetic at worst).
+    // Stable identity for a row, so Lit moves a row rather than rebuilding it
+    // when an edit reorders the table — which is what keeps the focused field
+    // under the caret. Every event kind has a real id from the core.
     private eventKey(ev: PanelEvent): string {
         if (ev.kind === 'Note') return `n:${ev.trackId}:${ev.noteId}`;
-        return `${ev.kind}:${ev.trackId}:${ev.tick}:${ev.controller ?? ''}:${ev.program ?? ''}:${ev.value ?? ''}`;
-    }
-
-    private nonNoteData1(ev: PanelEvent): string {
-        switch (ev.kind) {
-            case 'CC':            return `CC ${ev.controller}`;
-            case 'PitchBend':     return `${ev.value}`;
-            case 'ProgramChange': return `${ev.program! + 1}. ${gmProgramName(ev.program!)}`;
-            default:              return '';
-        }
+        return `${ev.kind}:${ev.trackId}:${ev.eventId}`;
     }
 
     render() {
@@ -429,7 +562,7 @@ export class MidiEventsPanel extends LitElement {
                 <table>
                     <colgroup>
                         <col class="c-tick"><col class="c-track"><col class="c-type">
-                        <col class="c-d1"><col class="c-d2"><col class="c-dur">
+                        <col class="c-d1"><col class="c-d2"><col class="c-dur"><col class="c-del">
                     </colgroup>
                     <thead>
                         <tr>
@@ -437,8 +570,9 @@ export class MidiEventsPanel extends LitElement {
                             <th>Track</th>
                             <th>Type</th>
                             <th>Pitch / Data</th>
-                            <th>Velocity</th>
+                            <th>Velocity / Value</th>
                             <th>Duration</th>
+                            <th></th>
                         </tr>
                     </thead>
                     <!-- Keyed: editing a tick reorders the list, and an unkeyed

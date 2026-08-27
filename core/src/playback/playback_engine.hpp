@@ -44,6 +44,19 @@ struct PlaybackProgramEvent {
     uint8_t program;
 };
 
+struct PlaybackControllerEvent {
+    int64_t tick;
+    uint8_t channel;
+    uint8_t controller;
+    uint8_t value;
+};
+
+struct PlaybackBendEvent {
+    int64_t tick;
+    uint8_t channel;
+    int16_t value;   // -8192..8191, centre is 0
+};
+
 class PlaybackEngine {
 public:
     using PositionCallback = std::function<void(timeline::Tick)>;
@@ -110,12 +123,15 @@ private:
     void send_note_on(uint8_t channel, uint8_t pitch, uint8_t velocity);
     void send_note_off(uint8_t channel, uint8_t pitch);
     void send_program_change(uint8_t channel, uint8_t program);
+    void send_controller(uint8_t channel, uint8_t controller, uint8_t value);
+    void send_pitch_bend(uint8_t channel, int16_t value);
     void all_notes_off_locked();  // requires m_state_mutex held
 
-    // Sends, per channel, the last program change at or before `tick`, so
-    // starting or seeking into the middle of a composition still uses the right
-    // instrument. Requires m_state_mutex held.
-    void send_effective_programs_locked(int64_t tick);
+    // Sends, per channel, the last program change, controller value and pitch
+    // bend at or before `tick`, so starting or seeking into the middle of a
+    // composition sounds the way playing up to that point would have.
+    // Requires m_state_mutex held.
+    void send_effective_state_locked(int64_t tick);
 
     // Push the position / transport state to whoever is listening. Both copy the
     // callback out and invoke it with no engine mutex held, so a listener is
@@ -135,6 +151,8 @@ private:
     mutable std::mutex m_state_mutex;
     std::vector<PlaybackNoteEvent> m_notes;
     std::vector<PlaybackProgramEvent> m_programs;
+    std::vector<PlaybackControllerEvent> m_controllers;
+    std::vector<PlaybackBendEvent> m_bends;
     std::vector<TempoSegment> m_tempo;
     std::vector<MeterSegment> m_meter;
     int64_t m_ppqn{480};

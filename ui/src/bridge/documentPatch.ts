@@ -1,4 +1,5 @@
 import { DocumentSnapshot, NoteSnapshot, TrackSnapshot, ProgramChangeEventSnapshot,
+         ControllerEventSnapshot, PitchBendEventSnapshot,
          TempoSnapshot, TimeSignatureSnapshot, KeySignatureSnapshot } from '../models/document';
 
 // Incremental changes pushed by the core after every committed mutation, so the
@@ -11,6 +12,10 @@ export type DocumentChange =
     | { kind: 'noteDeleted';           trackId: number; noteId: number }
     | { kind: 'trackPropsUpdated';     track: TrackPropsPatch }
     | { kind: 'trackProgramsUpdated';  trackId: number; programChanges: ProgramChangeEventSnapshot[] }
+    // Whole-list replacements: an edit can move an event in tick order, and these
+    // lists are small enough that sending them costs less than describing a delta.
+    | { kind: 'trackControllersUpdated'; trackId: number; controllerEvents: ControllerEventSnapshot[] }
+    | { kind: 'trackPitchBendsUpdated';  trackId: number; pitchBends: PitchBendEventSnapshot[] }
     | { kind: 'tempoMapUpdated';       tempoMap: TempoSnapshot[] }
     | { kind: 'timeSignatureMapUpdated'; timeSignatureMap: TimeSignatureSnapshot[] }
     | { kind: 'keySignatureMapUpdated';  keySignatureMap: KeySignatureSnapshot[] };
@@ -83,6 +88,12 @@ function applyChange(doc: DocumentSnapshot, change: DocumentChange): DocumentSna
 
         case 'trackProgramsUpdated':
             return replaceTrack(doc, change.trackId, t => ({ ...t, programChanges: change.programChanges }));
+
+        case 'trackControllersUpdated':
+            return replaceTrack(doc, change.trackId, t => ({ ...t, controllerEvents: change.controllerEvents }));
+
+        case 'trackPitchBendsUpdated':
+            return replaceTrack(doc, change.trackId, t => ({ ...t, pitchBends: change.pitchBends }));
 
         case 'tempoMapUpdated':
             return { ...doc, tempoMap: change.tempoMap };

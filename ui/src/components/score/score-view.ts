@@ -56,6 +56,17 @@ const NOTE_GLYPH_W = 18;
 const BOTTOM_LINE_Y = 80;   // y offset of the bottom staff line inside a lane
 const TOP_LINE_Y    = 40;   // y offset of the top staff line inside a lane
 
+// ─── Performance data band ───────────────────────────────────────────────────
+//
+// Controller events and pitch bends live in the gap between the bottom staff
+// line and the next lane, in two rows of their own so they never overlap each
+// other or reach the staff.
+const CC_MARK_Y     = 90;   // baseline a controller stroke rises from
+const CC_MARK_MIN   = 2;    // stroke height at value 0 — still has to be visible
+const CC_MARK_MAX   = 6;    // stroke height at value 127
+const PB_MARK_Y     = 95;   // centre of the pitch bend row
+const PB_MARK_SPAN  = 3;    // px a full-scale bend is displaced by
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1498,6 +1509,7 @@ export class ScoreView extends LitElement {
             for (const vm of visuals) {
                 if (vm.barlineX > STAFF_LABEL_W && vm.visualStartX < rect.width) {
                     this.renderMeasure(ctx, vm, yBase, clef);
+                    this.renderPerformanceMarks(ctx, vm, yBase, trackIdx);
                 }
             }
         });
@@ -1577,6 +1589,52 @@ export class ScoreView extends LitElement {
         ctx.moveTo(STAFF_LABEL_W + width, yBase + 1);
         ctx.lineTo(STAFF_LABEL_W + width, yBase + TH - 1);
         ctx.stroke();
+    }
+
+    // Controller events and pitch bends, in a thin band under the staff.
+    //
+    // Deliberately quiet: this is performance data, not notation, and it must
+    // not compete with the notes for attention. A controller is a short upward
+    // stroke whose height is its value; a pitch bend is a dot displaced from a
+    // centre line by the amount of the bend, so its direction reads at a glance.
+    // Both sit in their own row, so a track using them together stays legible.
+    private renderPerformanceMarks(ctx: CanvasRenderingContext2D, vm: MeasureVisualLayout,
+                                   yBase: number, trackIdx: number) {
+        const track = this.doc?.tracks[trackIdx];
+        if (!track) return;
+        const end = vm.startTick + vm.durationTicks;
+
+        ctx.save();
+        ctx.globalAlpha = 0.65;
+
+        // Both lists arrive sorted by tick, so stop at the bar line rather than
+        // walking the rest of the track for every visible measure, every frame.
+        ctx.strokeStyle = '#dcdcaa';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const cc of track.controllerEvents) {
+            if (cc.tick >= end) break;
+            if (cc.tick < vm.startTick) continue;
+            const x = Math.round(this.noteX(cc.tick, vm)) + 0.5;
+            const height = CC_MARK_MIN + (cc.value / 127) * (CC_MARK_MAX - CC_MARK_MIN);
+            ctx.moveTo(x, yBase + CC_MARK_Y);
+            ctx.lineTo(x, yBase + CC_MARK_Y - height);
+        }
+        ctx.stroke();
+
+        ctx.fillStyle = '#c586c0';
+        for (const pb of track.pitchBends) {
+            if (pb.tick >= end) break;
+            if (pb.tick < vm.startTick) continue;
+            const x = this.noteX(pb.tick, vm);
+            // Clamped so a full-scale bend cannot escape its row into the staff.
+            const offset = Math.max(-1, Math.min(1, pb.value / 8192)) * PB_MARK_SPAN;
+            ctx.beginPath();
+            ctx.arc(x, yBase + PB_MARK_Y - offset, 1.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.restore();
     }
 
     private renderMeasure(ctx: CanvasRenderingContext2D, vm: MeasureVisualLayout, yBase: number, clef: ClefDef) {

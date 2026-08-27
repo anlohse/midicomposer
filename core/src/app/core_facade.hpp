@@ -88,6 +88,24 @@ public:
     // Notation display only; never alters stored pitches.
     base::Result<void> set_track_clef(base::CompositionId doc_id, base::TrackId track_id, music::Clef clef);
 
+    // Controller events and pitch bends. Every field is editable; `update` only
+    // touches the fields it is given.
+    base::Result<base::EventId> create_controller_event(base::CompositionId doc_id, base::TrackId track_id,
+                                                        int64_t tick, uint8_t controller, uint8_t value);
+    base::Result<void> update_controller_event(base::CompositionId doc_id, base::TrackId track_id,
+                                               base::EventId event_id, std::optional<int64_t> tick,
+                                               std::optional<uint8_t> controller, std::optional<uint8_t> value);
+    base::Result<void> delete_controller_event(base::CompositionId doc_id, base::TrackId track_id,
+                                               base::EventId event_id);
+
+    base::Result<base::EventId> create_pitch_bend(base::CompositionId doc_id, base::TrackId track_id,
+                                                  int64_t tick, int16_t value);
+    base::Result<void> update_pitch_bend(base::CompositionId doc_id, base::TrackId track_id,
+                                         base::EventId event_id, std::optional<int64_t> tick,
+                                         std::optional<int16_t> value);
+    base::Result<void> delete_pitch_bend(base::CompositionId doc_id, base::TrackId track_id,
+                                         base::EventId event_id);
+
     // Transport
     void play(base::CompositionId doc_id);
     void record(base::CompositionId doc_id);

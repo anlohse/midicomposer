@@ -54,6 +54,8 @@ void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
 
     m_notes.clear();
     m_programs.clear();
+    m_controllers.clear();
+    m_bends.clear();
     for (const auto& track : comp.tracks()) {
         if (track.is_muted()) continue;
         if (any_solo && !track.is_solo()) continue;
@@ -65,11 +67,21 @@ void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
         for (const auto& pc : track.program_changes()) {
             m_programs.push_back({pc.tick.value(), channel, pc.program});
         }
+        for (const auto& cc : track.controller_events()) {
+            m_controllers.push_back({cc.tick.value(), channel, cc.controller, cc.value});
+        }
+        for (const auto& pb : track.pitch_bends()) {
+            m_bends.push_back({pb.tick.value(), channel, pb.value});
+        }
     }
     std::sort(m_notes.begin(), m_notes.end(),
               [](const auto& a, const auto& b) { return a.start_tick < b.start_tick; });
     std::sort(m_programs.begin(), m_programs.end(),
               [](const auto& a, const auto& b) { return a.tick < b.tick; });
+    std::stable_sort(m_controllers.begin(), m_controllers.end(),
+                     [](const auto& a, const auto& b) { return a.tick < b.tick; });
+    std::stable_sort(m_bends.begin(), m_bends.end(),
+                     [](const auto& a, const auto& b) { return a.tick < b.tick; });
 
     // Notes are the only thing the scheduler plays, so they alone decide when
     // the composition has run out: a program change past the last note produces
@@ -92,7 +104,7 @@ void PlaybackEngine::play(const project::ProjectDocument& doc) {
     {
         std::lock_guard lock(m_state_mutex);
         m_last_metronome_tick = -1;
-        send_effective_programs_locked(static_cast<int64_t>(m_precise_tick));
+        send_effective_state_locked(static_cast<int64_t>(m_precise_tick));
     }
     m_state = TransportState::Playing;
     notify_state(TransportState::Playing, current_tick());
@@ -104,7 +116,7 @@ void PlaybackEngine::record(const project::ProjectDocument& doc) {
     {
         std::lock_guard lock(m_state_mutex);
         m_last_metronome_tick = -1;
-        send_effective_programs_locked(static_cast<int64_t>(m_precise_tick));
+        send_effective_state_locked(static_cast<int64_t>(m_precise_tick));
     }
     m_state = TransportState::Recording;
     notify_state(TransportState::Recording, current_tick());
@@ -168,7 +180,7 @@ void PlaybackEngine::seek(timeline::Tick tick) {
     m_current_tick = target;
     m_last_metronome_tick = -1;
     all_notes_off_locked();
-    send_effective_programs_locked(target);
+    send_effective_state_locked(target);
     MC_LOG_DEBUG("Seek to tick: {}", target);
 }
 
@@ -283,6 +295,18 @@ void PlaybackEngine::thread_proc() {
                     if (pc.tick >= start_tick) send_program_change(pc.channel, pc.program);
                 }
 
+                // 2b. Controllers and pitch bends landing in this slice, before
+                //     the NoteOns below: a volume or bend written at the same
+                //     tick as a note is meant to apply to that note.
+                for (const auto& cc : m_controllers) {
+                    if (cc.tick >= end_tick) break;      // sorted by tick
+                    if (cc.tick >= start_tick) send_controller(cc.channel, cc.controller, cc.value);
+                }
+                for (const auto& pb : m_bends) {
+                    if (pb.tick >= end_tick) break;
+                    if (pb.tick >= start_tick) send_pitch_bend(pb.channel, pb.value);
+                }
+
                 // 3. NoteOns for snapshot notes starting in this slice. Also
                 //    active while recording so existing material is audible.
                 for (const auto& note : m_notes) {
@@ -375,20 +399,71 @@ void PlaybackEngine::send_program_change(uint8_t channel, uint8_t program) {
     m_midi_service.send_message(msg, 2);
 }
 
-void PlaybackEngine::send_effective_programs_locked(int64_t tick) {
+void PlaybackEngine::send_controller(uint8_t channel, uint8_t controller, uint8_t value) {
+    if (channel > 15) channel = 0;
+    unsigned char msg[3];
+    msg[0] = static_cast<unsigned char>(0xB0 | channel);
+    msg[1] = controller & 0x7F;
+    msg[2] = value & 0x7F;
+    m_midi_service.send_message(msg, 3);
+}
+
+void PlaybackEngine::send_pitch_bend(uint8_t channel, int16_t value) {
+    if (channel > 15) channel = 0;
+    // On the wire a bend is 14 bits with centre at 8192, split LSB first.
+    const int wire = std::clamp(static_cast<int>(value), -8192, 8191) + 8192;
+    unsigned char msg[3];
+    msg[0] = static_cast<unsigned char>(0xE0 | channel);
+    msg[1] = static_cast<unsigned char>(wire & 0x7F);
+    msg[2] = static_cast<unsigned char>((wire >> 7) & 0x7F);
+    m_midi_service.send_message(msg, 3);
+}
+
+void PlaybackEngine::send_effective_state_locked(int64_t tick) {
     if (!m_midi_service.is_output_open()) return;
-    // m_programs is sorted by tick, so walking forward and overwriting leaves
-    // the last program at or before `tick` for each channel.
-    uint8_t effective[16];
-    bool has[16] = {};
+
+    // Each list is sorted by tick, so walking forward and overwriting leaves the
+    // last value at or before `tick` for each channel. Starting or seeking into
+    // the middle then sounds the way playing up to that point would have —
+    // without this, a volume controller written in bar 1 would simply never be
+    // sent when playback starts from bar 20.
+    uint8_t program[16];
+    bool has_program[16] = {};
     for (const auto& pc : m_programs) {
         if (pc.tick > tick) break;
         const uint8_t ch = pc.channel & 0x0F;
-        effective[ch] = pc.program;
-        has[ch] = true;
+        program[ch] = pc.program;
+        has_program[ch] = true;
     }
     for (uint8_t ch = 0; ch < 16; ++ch) {
-        if (has[ch]) send_program_change(ch, effective[ch]);
+        if (has_program[ch]) send_program_change(ch, program[ch]);
+    }
+
+    // Per (channel, controller) rather than per channel: a track can set volume,
+    // pan and modulation independently, and only the latest of each applies.
+    std::map<std::pair<uint8_t, uint8_t>, uint8_t> controllers;
+    for (const auto& cc : m_controllers) {
+        if (cc.tick > tick) break;
+        controllers[{cc.channel & 0x0F, cc.controller}] = cc.value;
+    }
+    for (const auto& [key, value] : controllers) {
+        send_controller(key.first, key.second, value);
+    }
+
+    int16_t bend[16] = {};
+    bool has_bend[16] = {};
+    bool any_bend[16] = {};
+    for (const auto& pb : m_bends) {
+        const uint8_t ch = pb.channel & 0x0F;
+        any_bend[ch] = true;
+        if (pb.tick > tick) continue;   // still need the scan for any_bend
+        bend[ch] = pb.value;
+        has_bend[ch] = true;
+    }
+    for (uint8_t ch = 0; ch < 16; ++ch) {
+        // A channel that bends somewhere but not yet is re-centred: seeking
+        // backwards past a bend must not leave the pitch hanging where it was.
+        if (any_bend[ch]) send_pitch_bend(ch, has_bend[ch] ? bend[ch] : 0);
     }
 }
 

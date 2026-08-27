@@ -99,6 +99,55 @@ public:
         project::ProjectDocument& doc,
         base::TrackId track_id);
 
+    // ── Controller events and pitch bends ────────────────────────────────────
+    //
+    // Performance data rather than notation: a track carries an arbitrary number
+    // of these at arbitrary ticks, and every field is editable.
+    //
+    // Each operation swaps the track's whole list, so create, update and delete
+    // share one code path and undo restores the exact previous list — the same
+    // reasoning as the key and time signature maps. The lists are small enough
+    // that copying one is not worth optimising away.
+
+    base::Result<base::EventId> create_controller_event(
+        project::ProjectDocument& doc,
+        base::TrackId track_id,
+        timeline::Tick tick,
+        std::uint8_t controller,
+        std::uint8_t value);
+
+    // Only the fields given are changed, so the UI can edit one at a time.
+    base::Result<void> update_controller_event(
+        project::ProjectDocument& doc,
+        base::TrackId track_id,
+        base::EventId event_id,
+        std::optional<timeline::Tick> tick,
+        std::optional<std::uint8_t> controller,
+        std::optional<std::uint8_t> value);
+
+    base::Result<void> delete_controller_event(
+        project::ProjectDocument& doc,
+        base::TrackId track_id,
+        base::EventId event_id);
+
+    base::Result<base::EventId> create_pitch_bend(
+        project::ProjectDocument& doc,
+        base::TrackId track_id,
+        timeline::Tick tick,
+        std::int16_t value);
+
+    base::Result<void> update_pitch_bend(
+        project::ProjectDocument& doc,
+        base::TrackId track_id,
+        base::EventId event_id,
+        std::optional<timeline::Tick> tick,
+        std::optional<std::int16_t> value);
+
+    base::Result<void> delete_pitch_bend(
+        project::ProjectDocument& doc,
+        base::TrackId track_id,
+        base::EventId event_id);
+
     base::Result<void> set_tempo(
         project::ProjectDocument& doc,
         double bpm);

@@ -143,3 +143,50 @@ test('a change naming an unknown track asks the caller to re-snapshot', () => {
         { kind: 'noteDeleted', trackId: 999, noteId: 1 },
     ])), null);
 });
+
+// ─── Controller events and pitch bends ───────────────────────────────────────
+//
+// Both arrive as whole-list replacements, so the mirror takes the list as given
+// rather than merging: the core has already sorted it and dropped what was
+// deleted.
+
+test('a controller list replaces whatever the mirror had', () => {
+    const next = applyDocumentPatch(mirror(), patch([{
+        kind: 'trackControllersUpdated', trackId: 7,
+        controllerEvents: [
+            { id: '10', tick: 0, controller: 7, value: 100 },
+            { id: '11', tick: 480, controller: 10, value: 64 },
+        ],
+    }]));
+    assert.ok(next);
+    assert.deepEqual(next!.tracks[0].controllerEvents.map(e => e.id), ['10', '11']);
+    assert.equal(next!.tracks[0].controllerEvents[1].controller, 10);
+    // Nothing else on the track is disturbed.
+    assert.equal(next!.tracks[0].notes.length, 2);
+    assert.deepEqual(next!.tracks[0].pitchBends, []);
+});
+
+test('an emptied controller list is a deletion', () => {
+    const before = mirror();
+    before.tracks[0].controllerEvents = [{ id: '10', tick: 0, controller: 7, value: 100 }];
+    const next = applyDocumentPatch(before, patch([{
+        kind: 'trackControllersUpdated', trackId: 7, controllerEvents: [],
+    }]));
+    assert.deepEqual(next!.tracks[0].controllerEvents, []);
+});
+
+test('a pitch bend list replaces and keeps signed values', () => {
+    const next = applyDocumentPatch(mirror(), patch([{
+        kind: 'trackPitchBendsUpdated', trackId: 7,
+        pitchBends: [{ id: '20', tick: 0, value: -8192 }, { id: '21', tick: 240, value: 8191 }],
+    }]));
+    assert.ok(next);
+    assert.deepEqual(next!.tracks[0].pitchBends.map(e => e.value), [-8192, 8191]);
+});
+
+test('an unknown track in a controller patch forces a resync', () => {
+    const next = applyDocumentPatch(mirror(), patch([{
+        kind: 'trackControllersUpdated', trackId: 999, controllerEvents: [],
+    }]));
+    assert.equal(next, null);
+});
