@@ -238,6 +238,32 @@ void apply_program_at_zero(project::ProjectDocument& doc,
     record_track(doc, project::ChangeKind::TrackProgramsUpdated, track_id);
 }
 
+// ── Controller events and pitch bends ────────────────────────────────────────
+//
+// Both are handled by swapping the track's whole list. Create, update and delete
+// then share one mutator, undo restores the exact previous list, and the sort
+// below keeps the collection in tick order however an edit moved things.
+
+void apply_controllers(project::ProjectDocument& doc, base::TrackId track_id,
+                       std::vector<music::ControllerEvent> events) {
+    auto* track = find_track(doc, track_id);
+    if (!track) return;
+    std::stable_sort(events.begin(), events.end(),
+                     [](const auto& a, const auto& b) { return a.tick.value() < b.tick.value(); });
+    track->controller_events() = std::move(events);
+    record_track(doc, project::ChangeKind::TrackControllersUpdated, track_id);
+}
+
+void apply_pitch_bends(project::ProjectDocument& doc, base::TrackId track_id,
+                       std::vector<music::PitchBendEvent> events) {
+    auto* track = find_track(doc, track_id);
+    if (!track) return;
+    std::stable_sort(events.begin(), events.end(),
+                     [](const auto& a, const auto& b) { return a.tick.value() < b.tick.value(); });
+    track->pitch_bends() = std::move(events);
+    record_track(doc, project::ChangeKind::TrackPitchBendsUpdated, track_id);
+}
+
 void commit(project::ProjectDocument& doc, project::UndoHistory::Entry entry) {
     doc.history().push(std::move(entry));
     doc.mark_dirty();
@@ -474,6 +500,217 @@ base::Result<void> EditService::delete_track(
             if (i != ts.end()) ts.erase(i);
             record_global(doc, project::ChangeKind::ResyncRequired);
         },
+    });
+    return {};
+}
+
+// ── Controller events and pitch bends ────────────────────────────────────────
+//
+// Each of the six operations builds the list it wants, hands it to the mutator,
+// and pushes an undo entry that swaps the previous list back. The mutator sorts,
+// so none of them has to think about ordering.
+
+base::Result<base::EventId> EditService::create_controller_event(
+    project::ProjectDocument& doc,
+    base::TrackId track_id,
+    timeline::Tick tick,
+    std::uint8_t controller,
+    std::uint8_t value)
+{
+    auto* track = find_track(doc, track_id);
+    if (!track) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Track not found"});
+    }
+    if (tick.value() < 0) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument, "Tick must not be negative"});
+    }
+    if (controller > 127 || value > 127) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument, "Controller and value must be 0-127"});
+    }
+
+    const base::EventId id{next_event_id(doc)};
+    const auto before = track->controller_events();
+    auto after = before;
+    after.push_back(music::ControllerEvent{id, tick, controller, value});
+
+    apply_controllers(doc, track_id, after);
+    commit(doc, {
+        [&doc, track_id, before]() { apply_controllers(doc, track_id, before); },
+        [&doc, track_id, after]()  { apply_controllers(doc, track_id, after); },
+    });
+    return id;
+}
+
+base::Result<void> EditService::update_controller_event(
+    project::ProjectDocument& doc,
+    base::TrackId track_id,
+    base::EventId event_id,
+    std::optional<timeline::Tick> tick,
+    std::optional<std::uint8_t> controller,
+    std::optional<std::uint8_t> value)
+{
+    auto* track = find_track(doc, track_id);
+    if (!track) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Track not found"});
+    }
+    if (tick && tick->value() < 0) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument, "Tick must not be negative"});
+    }
+    if ((controller && *controller > 127) || (value && *value > 127)) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument, "Controller and value must be 0-127"});
+    }
+
+    const auto before = track->controller_events();
+    auto after = before;
+    auto it = std::find_if(after.begin(), after.end(),
+                           [event_id](const auto& e) { return e.id == event_id; });
+    if (it == after.end()) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Controller event not found"});
+    }
+    const auto index = static_cast<std::size_t>(it - after.begin());
+    if (tick)       it->tick = *tick;
+    if (controller) it->controller = *controller;
+    if (value)      it->value = *value;
+
+    // Nothing actually changed: no revision bump, no undo entry, nothing for the
+    // UI to apply — the same contract as a no-op note update.
+    if (it->tick.value() == before[index].tick.value() &&
+        it->controller == before[index].controller &&
+        it->value == before[index].value) {
+        return {};
+    }
+
+    apply_controllers(doc, track_id, after);
+    commit(doc, {
+        [&doc, track_id, before]() { apply_controllers(doc, track_id, before); },
+        [&doc, track_id, after]()  { apply_controllers(doc, track_id, after); },
+    });
+    return {};
+}
+
+base::Result<void> EditService::delete_controller_event(
+    project::ProjectDocument& doc,
+    base::TrackId track_id,
+    base::EventId event_id)
+{
+    auto* track = find_track(doc, track_id);
+    if (!track) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Track not found"});
+    }
+
+    const auto before = track->controller_events();
+    auto after = before;
+    auto it = std::find_if(after.begin(), after.end(),
+                           [event_id](const auto& e) { return e.id == event_id; });
+    if (it == after.end()) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Controller event not found"});
+    }
+    after.erase(it);
+
+    apply_controllers(doc, track_id, after);
+    commit(doc, {
+        [&doc, track_id, before]() { apply_controllers(doc, track_id, before); },
+        [&doc, track_id, after]()  { apply_controllers(doc, track_id, after); },
+    });
+    return {};
+}
+
+base::Result<base::EventId> EditService::create_pitch_bend(
+    project::ProjectDocument& doc,
+    base::TrackId track_id,
+    timeline::Tick tick,
+    std::int16_t value)
+{
+    auto* track = find_track(doc, track_id);
+    if (!track) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Track not found"});
+    }
+    if (tick.value() < 0) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument, "Tick must not be negative"});
+    }
+    if (value < -8192 || value > 8191) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
+                                           "Pitch bend must be between -8192 and 8191"});
+    }
+
+    const base::EventId id{next_event_id(doc)};
+    const auto before = track->pitch_bends();
+    auto after = before;
+    after.push_back(music::PitchBendEvent{id, tick, value});
+
+    apply_pitch_bends(doc, track_id, after);
+    commit(doc, {
+        [&doc, track_id, before]() { apply_pitch_bends(doc, track_id, before); },
+        [&doc, track_id, after]()  { apply_pitch_bends(doc, track_id, after); },
+    });
+    return id;
+}
+
+base::Result<void> EditService::update_pitch_bend(
+    project::ProjectDocument& doc,
+    base::TrackId track_id,
+    base::EventId event_id,
+    std::optional<timeline::Tick> tick,
+    std::optional<std::int16_t> value)
+{
+    auto* track = find_track(doc, track_id);
+    if (!track) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Track not found"});
+    }
+    if (tick && tick->value() < 0) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument, "Tick must not be negative"});
+    }
+    if (value && (*value < -8192 || *value > 8191)) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
+                                           "Pitch bend must be between -8192 and 8191"});
+    }
+
+    const auto before = track->pitch_bends();
+    auto after = before;
+    auto it = std::find_if(after.begin(), after.end(),
+                           [event_id](const auto& e) { return e.id == event_id; });
+    if (it == after.end()) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Pitch bend not found"});
+    }
+    const auto index = static_cast<std::size_t>(it - after.begin());
+    if (tick)  it->tick = *tick;
+    if (value) it->value = *value;
+
+    if (it->tick.value() == before[index].tick.value() && it->value == before[index].value) {
+        return {};
+    }
+
+    apply_pitch_bends(doc, track_id, after);
+    commit(doc, {
+        [&doc, track_id, before]() { apply_pitch_bends(doc, track_id, before); },
+        [&doc, track_id, after]()  { apply_pitch_bends(doc, track_id, after); },
+    });
+    return {};
+}
+
+base::Result<void> EditService::delete_pitch_bend(
+    project::ProjectDocument& doc,
+    base::TrackId track_id,
+    base::EventId event_id)
+{
+    auto* track = find_track(doc, track_id);
+    if (!track) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Track not found"});
+    }
+
+    const auto before = track->pitch_bends();
+    auto after = before;
+    auto it = std::find_if(after.begin(), after.end(),
+                           [event_id](const auto& e) { return e.id == event_id; });
+    if (it == after.end()) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Pitch bend not found"});
+    }
+    after.erase(it);
+
+    apply_pitch_bends(doc, track_id, after);
+    commit(doc, {
+        [&doc, track_id, before]() { apply_pitch_bends(doc, track_id, before); },
+        [&doc, track_id, after]()  { apply_pitch_bends(doc, track_id, after); },
     });
     return {};
 }

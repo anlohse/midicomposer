@@ -55,6 +55,23 @@ nlohmann::json program_changes_to_json(const mc::music::Track& track) {
     return arr;
 }
 
+nlohmann::json controller_events_to_json(const mc::music::Track& track) {
+    auto arr = nlohmann::json::array();
+    for (const auto& ev : track.controller_events()) {
+        arr.push_back({{"id", ev.id.value()}, {"tick", ev.tick.value()},
+                       {"controller", ev.controller}, {"value", ev.value}});
+    }
+    return arr;
+}
+
+nlohmann::json pitch_bends_to_json(const mc::music::Track& track) {
+    auto arr = nlohmann::json::array();
+    for (const auto& ev : track.pitch_bends()) {
+        arr.push_back({{"id", ev.id.value()}, {"tick", ev.tick.value()}, {"value", ev.value}});
+    }
+    return arr;
+}
+
 nlohmann::json tempo_map_to_json(const mc::music::Composition& comp) {
     auto arr = nlohmann::json::array();
     for (const auto& ev : comp.tempo_map().events()) {
@@ -184,27 +201,10 @@ nlohmann::json CoreFacade::get_document_snapshot(base::CompositionId id) const {
         for (const auto& note : track.notes()) notes.push_back(note_to_json(note));
         t["notes"] = notes;
 
-        auto cc_events = nlohmann::json::array();
-        for (const auto& ev : track.controller_events()) {
-            nlohmann::json e;
-            e["id"] = ev.id.value();
-            e["tick"] = ev.tick.value();
-            e["controller"] = ev.controller;
-            e["value"] = ev.value;
-            cc_events.push_back(e);
-        }
-        t["controllerEvents"] = cc_events;
-
-        auto pb_events = nlohmann::json::array();
-        for (const auto& ev : track.pitch_bends()) {
-            nlohmann::json e;
-            e["id"] = ev.id.value();
-            e["tick"] = ev.tick.value();
-            e["value"] = ev.value;
-            pb_events.push_back(e);
-        }
-        t["pitchBends"] = pb_events;
-
+        // Through the same helpers the incremental patches use, so a snapshot and
+        // a patch can never disagree about the shape of an event.
+        t["controllerEvents"] = controller_events_to_json(track);
+        t["pitchBends"] = pitch_bends_to_json(track);
         t["programChanges"] = program_changes_to_json(track);
 
         tracks.push_back(t);
@@ -523,6 +523,97 @@ base::Result<void> CoreFacade::set_track_clef(base::CompositionId doc_id, base::
     return result;
 }
 
+// Controller events and pitch bends. All six follow the same shape as the other
+// undoable edits: lock, look the document up, run the edit, publish the patch.
+// refresh_playback_if_active matters here — both are scheduled during playback,
+// so an edit made while the transport runs has to reach the snapshot.
+
+base::Result<base::EventId> CoreFacade::create_controller_event(
+    base::CompositionId doc_id, base::TrackId track_id,
+    int64_t tick, uint8_t controller, uint8_t value)
+{
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+    auto result = m_edit_service.create_controller_event(*doc, track_id, timeline::Tick{tick},
+                                                        controller, value);
+    if (result) refresh_playback_if_active(doc_id, *doc);
+    publish_changes(doc_id, *doc, base_revision);
+    return result;
+}
+
+base::Result<void> CoreFacade::update_controller_event(
+    base::CompositionId doc_id, base::TrackId track_id, base::EventId event_id,
+    std::optional<int64_t> tick, std::optional<uint8_t> controller, std::optional<uint8_t> value)
+{
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+    std::optional<timeline::Tick> at;
+    if (tick) at = timeline::Tick{*tick};
+    auto result = m_edit_service.update_controller_event(*doc, track_id, event_id, at, controller, value);
+    if (result) refresh_playback_if_active(doc_id, *doc);
+    publish_changes(doc_id, *doc, base_revision);
+    return result;
+}
+
+base::Result<void> CoreFacade::delete_controller_event(
+    base::CompositionId doc_id, base::TrackId track_id, base::EventId event_id)
+{
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+    auto result = m_edit_service.delete_controller_event(*doc, track_id, event_id);
+    if (result) refresh_playback_if_active(doc_id, *doc);
+    publish_changes(doc_id, *doc, base_revision);
+    return result;
+}
+
+base::Result<base::EventId> CoreFacade::create_pitch_bend(
+    base::CompositionId doc_id, base::TrackId track_id, int64_t tick, int16_t value)
+{
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+    auto result = m_edit_service.create_pitch_bend(*doc, track_id, timeline::Tick{tick}, value);
+    if (result) refresh_playback_if_active(doc_id, *doc);
+    publish_changes(doc_id, *doc, base_revision);
+    return result;
+}
+
+base::Result<void> CoreFacade::update_pitch_bend(
+    base::CompositionId doc_id, base::TrackId track_id, base::EventId event_id,
+    std::optional<int64_t> tick, std::optional<int16_t> value)
+{
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+    std::optional<timeline::Tick> at;
+    if (tick) at = timeline::Tick{*tick};
+    auto result = m_edit_service.update_pitch_bend(*doc, track_id, event_id, at, value);
+    if (result) refresh_playback_if_active(doc_id, *doc);
+    publish_changes(doc_id, *doc, base_revision);
+    return result;
+}
+
+base::Result<void> CoreFacade::delete_pitch_bend(
+    base::CompositionId doc_id, base::TrackId track_id, base::EventId event_id)
+{
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+    auto result = m_edit_service.delete_pitch_bend(*doc, track_id, event_id);
+    if (result) refresh_playback_if_active(doc_id, *doc);
+    publish_changes(doc_id, *doc, base_revision);
+    return result;
+}
+
 base::Result<void> CoreFacade::set_track_program(base::CompositionId doc_id, base::TrackId track_id, uint8_t program) {
     std::lock_guard lock(m_doc_mutex);
     auto* doc = m_document_manager.get_document(doc_id);
@@ -637,6 +728,22 @@ nlohmann::json CoreFacade::build_patch(base::CompositionId doc_id, project::Proj
                 item["kind"] = "trackProgramsUpdated";
                 item["trackId"] = change.track_id.value();
                 item["programChanges"] = program_changes_to_json(*track);
+                break;
+            }
+            case project::ChangeKind::TrackControllersUpdated: {
+                const auto* track = find_track_const(comp, change.track_id);
+                if (!track) { resync = true; continue; }
+                item["kind"] = "trackControllersUpdated";
+                item["trackId"] = change.track_id.value();
+                item["controllerEvents"] = controller_events_to_json(*track);
+                break;
+            }
+            case project::ChangeKind::TrackPitchBendsUpdated: {
+                const auto* track = find_track_const(comp, change.track_id);
+                if (!track) { resync = true; continue; }
+                item["kind"] = "trackPitchBendsUpdated";
+                item["trackId"] = change.track_id.value();
+                item["pitchBends"] = pitch_bends_to_json(*track);
                 break;
             }
             case project::ChangeKind::TempoMapUpdated:

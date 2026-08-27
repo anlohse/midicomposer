@@ -19,6 +19,11 @@ enum class ChangeKind {
     NoteDeleted,
     TrackPropsUpdated,       // name, channel, volume, pan, mute, solo, arm
     TrackProgramsUpdated,    // the track's program-change list
+    // Whole-list replacements, like the programs above. These lists are small
+    // and an edit can reorder them, so shipping the list costs less than
+    // describing the delta and leaves nothing to get out of order.
+    TrackControllersUpdated,
+    TrackPitchBendsUpdated,
     TempoMapUpdated,
     TimeSignatureMapUpdated,
     KeySignatureMapUpdated,

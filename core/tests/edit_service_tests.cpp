@@ -261,6 +261,139 @@ TEST_CASE("the instrument is the program change at tick 0") {
     CHECK(track_of(doc).program_changes().empty());
 }
 
+TEST_CASE("controller events are created in tick order and are undoable") {
+    auto doc = make_document();
+    edit::EditService svc;
+
+    // Deliberately out of order: the service sorts, so nothing downstream has to.
+    auto later = svc.create_controller_event(doc, kTrack, timeline::Tick{kPpqn}, 7, 100);
+    auto first = svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 1, 64);
+    REQUIRE(later.has_value());
+    REQUIRE(first.has_value());
+    CHECK(*later != *first);                       // fresh id per event
+
+    const auto& ccs = track_of(doc).controller_events();
+    REQUIRE(ccs.size() == 2);
+    CHECK(ccs[0].tick.value() == 0);
+    CHECK(ccs[0].controller == 1);
+    CHECK(ccs[1].tick.value() == kPpqn);
+    // One record per committed operation. Each carries the whole list, so the
+    // later one supersedes the earlier when the UI applies them in order.
+    CHECK(drain_kinds(doc) == std::vector{project::ChangeKind::TrackControllersUpdated,
+                                          project::ChangeKind::TrackControllersUpdated});
+
+    REQUIRE(doc.history().undo());
+    CHECK(track_of(doc).controller_events().size() == 1);
+    REQUIRE(doc.history().redo());
+    CHECK(track_of(doc).controller_events().size() == 2);
+}
+
+TEST_CASE("a controller update touches only the fields it is given") {
+    auto doc = make_document();
+    edit::EditService svc;
+    auto id = svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 7, 100);
+    REQUIRE(id.has_value());
+
+    REQUIRE(svc.update_controller_event(doc, kTrack, *id, std::nullopt, std::nullopt,
+                                        std::uint8_t{20}).has_value());
+    CHECK(track_of(doc).controller_events().front().controller == 7);   // untouched
+    CHECK(track_of(doc).controller_events().front().value == 20);
+
+    // Moving one re-sorts the list, which is why the whole list is shipped.
+    REQUIRE(svc.create_controller_event(doc, kTrack, timeline::Tick{kPpqn}, 10, 64).has_value());
+    REQUIRE(svc.update_controller_event(doc, kTrack, *id, timeline::Tick{kPpqn * 2},
+                                        std::nullopt, std::nullopt).has_value());
+    CHECK(track_of(doc).controller_events().back().id == *id);
+
+    REQUIRE(doc.history().undo());
+    CHECK(track_of(doc).controller_events().front().id == *id);
+}
+
+TEST_CASE("a no-op controller update records nothing") {
+    auto doc = make_document();
+    edit::EditService svc;
+    auto id = svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 7, 100);
+    REQUIRE(id.has_value());
+    drain_kinds(doc);
+    const auto revision = doc.revision();
+
+    REQUIRE(svc.update_controller_event(doc, kTrack, *id, timeline::Tick{0},
+                                        std::uint8_t{7}, std::uint8_t{100}).has_value());
+    CHECK(doc.revision() == revision);
+    CHECK(drain_kinds(doc).empty());
+}
+
+TEST_CASE("out-of-range controller data is rejected") {
+    auto doc = make_document();
+    edit::EditService svc;
+    CHECK_FALSE(svc.create_controller_event(doc, kTrack, timeline::Tick{-1}, 7, 100));
+    CHECK_FALSE(svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 128, 100));
+    CHECK_FALSE(svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 7, 128));
+    CHECK_FALSE(svc.create_controller_event(doc, base::TrackId{99}, timeline::Tick{0}, 7, 100));
+    CHECK(track_of(doc).controller_events().empty());
+    CHECK(doc.revision() == 0);
+}
+
+TEST_CASE("deleting a controller event restores on undo") {
+    auto doc = make_document();
+    edit::EditService svc;
+    auto id = svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 7, 100);
+    REQUIRE(id.has_value());
+
+    REQUIRE(svc.delete_controller_event(doc, kTrack, *id).has_value());
+    CHECK(track_of(doc).controller_events().empty());
+    CHECK_FALSE(svc.delete_controller_event(doc, kTrack, *id));   // already gone
+
+    REQUIRE(doc.history().undo());
+    REQUIRE(track_of(doc).controller_events().size() == 1);
+    CHECK(track_of(doc).controller_events().front().value == 100);
+}
+
+TEST_CASE("pitch bends accept the full signed range and nothing outside it") {
+    auto doc = make_document();
+    edit::EditService svc;
+
+    auto low = svc.create_pitch_bend(doc, kTrack, timeline::Tick{0}, -8192);
+    auto high = svc.create_pitch_bend(doc, kTrack, timeline::Tick{kPpqn}, 8191);
+    REQUIRE(low.has_value());
+    REQUIRE(high.has_value());
+    CHECK(track_of(doc).pitch_bends().size() == 2);
+    CHECK(drain_kinds(doc) == std::vector{project::ChangeKind::TrackPitchBendsUpdated,
+                                          project::ChangeKind::TrackPitchBendsUpdated});
+
+    CHECK_FALSE(svc.create_pitch_bend(doc, kTrack, timeline::Tick{0}, -8193));
+    CHECK_FALSE(svc.create_pitch_bend(doc, kTrack, timeline::Tick{0}, 8192));
+    CHECK_FALSE(svc.create_pitch_bend(doc, kTrack, timeline::Tick{-1}, 0));
+    CHECK(track_of(doc).pitch_bends().size() == 2);
+
+    REQUIRE(svc.update_pitch_bend(doc, kTrack, *low, std::nullopt, std::int16_t{4096}).has_value());
+    CHECK(track_of(doc).pitch_bends().front().value == 4096);
+    CHECK_FALSE(svc.update_pitch_bend(doc, kTrack, *low, std::nullopt, std::int16_t{9000}));
+    CHECK(track_of(doc).pitch_bends().front().value == 4096);
+
+    REQUIRE(svc.delete_pitch_bend(doc, kTrack, *high).has_value());
+    CHECK(track_of(doc).pitch_bends().size() == 1);
+    REQUIRE(doc.history().undo());
+    CHECK(track_of(doc).pitch_bends().size() == 2);
+}
+
+TEST_CASE("event ids do not collide across the kinds sharing the counter") {
+    auto doc = make_document();
+    edit::EditService svc;
+
+    auto cc = svc.create_controller_event(doc, kTrack, timeline::Tick{0}, 7, 100);
+    auto pb = svc.create_pitch_bend(doc, kTrack, timeline::Tick{0}, 1000);
+    REQUIRE(svc.set_track_program(doc, kTrack, 40).has_value());
+    REQUIRE(cc.has_value());
+    REQUIRE(pb.has_value());
+
+    // One counter is shared by every event kind, and the panel addresses events
+    // by id, so a collision would make one row edit another.
+    CHECK(*cc != *pb);
+    CHECK(track_of(doc).program_changes().front().id != *cc);
+    CHECK(track_of(doc).program_changes().front().id != *pb);
+}
+
 TEST_CASE("deleting a track and undoing restores its notes") {
     auto doc = make_document();
     edit::EditService svc;

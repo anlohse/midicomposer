@@ -93,6 +93,39 @@ TEST_CASE("the content end is the last tick any note sounds to") {
     CHECK(engine.content_end_tick() == 0);
 }
 
+TEST_CASE("controllers and pitch bends do not hold playback open") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_document({{0, kPpqn}});
+    auto& track = doc.composition().tracks().front();
+    // Long after the last note. These produce no sound of their own, so waiting
+    // for them would leave the transport running over silence.
+    track.controller_events().push_back({base::EventId{100}, timeline::Tick{kPpqn * 50}, 7, 100});
+    track.pitch_bends().push_back({base::EventId{101}, timeline::Tick{kPpqn * 60}, 4096});
+
+    engine.refresh_snapshot(doc);
+    CHECK(engine.content_end_tick() == kPpqn);
+}
+
+TEST_CASE("a composition with controllers and bends still plays and stops") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_document({{0, kPpqn / 2}});
+    auto& track = doc.composition().tracks().front();
+    track.controller_events().push_back({base::EventId{100}, timeline::Tick{0}, 7, 100});
+    track.controller_events().push_back({base::EventId{101}, timeline::Tick{kPpqn / 4}, 10, 0});
+    track.pitch_bends().push_back({base::EventId{102}, timeline::Tick{0}, -8192});
+    track.pitch_bends().push_back({base::EventId{103}, timeline::Tick{kPpqn / 4}, 8191});
+
+    // The scheduler walks these lists on every slice; the extremes are here to
+    // catch an out-of-range conversion in the 14-bit bend encoding.
+    engine.play(doc);
+    REQUIRE(wait_for_state(engine, playback::TransportState::Stopped, 3000ms));
+    CHECK(engine.current_tick().value() == 0);
+}
+
 TEST_CASE("playback stops itself once the composition runs out") {
     device::MidiService midi;
     playback::PlaybackEngine engine{midi};

@@ -42,6 +42,16 @@ namespace {
 
 // nlohmann's get<uint8_t>() silently truncates out-of-range values; read as
 // int and validate at the bridge boundary instead.
+// Pitch bend is the one signed data field on the wire, and out of range it would
+// wrap rather than clip.
+int16_t checked_bend(const nlohmann::json& payload, const char* field) {
+    const int value = payload.at(field).get<int>();
+    if (value < -8192 || value > 8191) {
+        throw std::invalid_argument(std::string(field) + " must be between -8192 and 8191");
+    }
+    return static_cast<int16_t>(value);
+}
+
 uint8_t checked_u8(const nlohmann::json& payload, const char* field, int min, int max) {
     const int value = payload.at(field).get<int>();
     if (value < min || value > max) {
@@ -118,6 +128,54 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             if (payload.contains("pitch")) pitch = checked_u8(payload, "pitch", 0, 127);
             if (payload.contains("velocity")) velocity = checked_u8(payload, "velocity", 1, 127);
             auto res = m_core.update_note(doc_id, track_id, note_id, pitch, velocity);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "create_controller_event") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            auto res = m_core.create_controller_event(
+                doc_id, track_id, payload.at("tick").get<int64_t>(),
+                checked_u8(payload, "controller", 0, 127), checked_u8(payload, "value", 0, 127));
+            if (res) response["result"] = {{"id", res->value()}};
+            else { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "update_controller_event") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            base::EventId event_id{payload.at("eventId").get<uint64_t>()};
+            std::optional<int64_t> tick;
+            std::optional<uint8_t> controller, value;
+            if (payload.contains("tick")) tick = payload.at("tick").get<int64_t>();
+            if (payload.contains("controller")) controller = checked_u8(payload, "controller", 0, 127);
+            if (payload.contains("value")) value = checked_u8(payload, "value", 0, 127);
+            auto res = m_core.update_controller_event(doc_id, track_id, event_id, tick, controller, value);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "delete_controller_event") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            base::EventId event_id{payload.at("eventId").get<uint64_t>()};
+            auto res = m_core.delete_controller_event(doc_id, track_id, event_id);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "create_pitch_bend") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            auto res = m_core.create_pitch_bend(doc_id, track_id, payload.at("tick").get<int64_t>(),
+                                                checked_bend(payload, "value"));
+            if (res) response["result"] = {{"id", res->value()}};
+            else { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "update_pitch_bend") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            base::EventId event_id{payload.at("eventId").get<uint64_t>()};
+            std::optional<int64_t> tick;
+            std::optional<int16_t> value;
+            if (payload.contains("tick")) tick = payload.at("tick").get<int64_t>();
+            if (payload.contains("value")) value = checked_bend(payload, "value");
+            auto res = m_core.update_pitch_bend(doc_id, track_id, event_id, tick, value);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "delete_pitch_bend") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            base::EventId event_id{payload.at("eventId").get<uint64_t>()};
+            auto res = m_core.delete_pitch_bend(doc_id, track_id, event_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "batch_edit") {
             base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
