@@ -10,6 +10,7 @@ import { ACCIDENTAL_TEXT, AccidentalGlyph, accidentalFor, cancellationCount,
          cancellationSteps, keyAt, signatureSteps, spellPitch,
          stepToKeyPitch } from '../../models/keySignature';
 import { DENOMINATORS } from '../../models/timeSignature';
+import { durationTicks, snapToGrid, snapTicks } from '../../models/snap';
 import { maxScroll, measureWindow, needsReveal, scrollStops, scrollThumb,
          snapToStop, stepStop, thumbDragToScroll } from '../../models/scoreScroll';
 import type { ScoreTool, NoteDuration, ScoreMode, ScoreGrid } from './score-toolbar';
@@ -19,6 +20,15 @@ import type { ScoreTool, NoteDuration, ScoreMode, ScoreGrid } from './score-tool
 const TH               = 100;   // track height px
 const STAFF_LABEL_W    = 100;   // fixed label column width
 const PX_PER_TICK_BASE = 0.2;
+
+// Horizontal zoom bounds. The floor used to be far lower, but with the note
+// area no longer padded up to a minimum width, anything below this is unreadable
+// rather than merely small.
+export const ZOOM_MIN = 0.25;
+export const ZOOM_MAX = 8;
+export function clampZoom(zoom: number): number {
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+}
 const STEM_LEN         = 30;    // notehead-centre → stem tip
 const BEAM_H           = 4;     // beam bar thickness
 const BEAM_GAP         = 3;     // gap between beam bars (16th)
@@ -42,7 +52,9 @@ const MEASURE_PAD_R   = 22;   // end of the note area → next barline
 const CLEF_W          = 36;
 const KEY_ACC_W       = 9;    // per accidental in the key signature
 const TIME_SIG_W      = 26;   // two stacked numerals
-const MIN_CONTENT_W   = 110;  // floor on the note area so glyphs never collide
+// No floor on the note area: pxPerTick has to be the same in every measure, or
+// a pixel means a different amount of time depending on where it is and notes
+// land at the wrong tick. Readability at small sizes is the zoom control's job.
 
 // A notehead occupies x … x+12; the augmentation dot reaches x+18.
 const NOTE_GLYPH_W = 18;
@@ -52,6 +64,30 @@ const NOTE_GLYPH_W = 18;
 // The staff itself is fixed; only which pitch lands on which line depends on the
 // track's clef, and that collapses to ClefDef.bottomLineStep. See models/clef.ts
 // for the pitch ↔ step mapping.
+
+// ─── Ruler ───────────────────────────────────────────────────────────────────
+//
+// A fixed band above the staves. It scrolls horizontally with the music but not
+// vertically with the lanes, so it is the one place that reads a position
+// without having to know which track you are over.
+const RULER_H = 16;
+// Mark height per division, coarsest first. A position takes the height of the
+// coarsest division it falls on, so a bar line reads taller than a beat.
+//
+// 1/16 is where the ladder runs out: a mark shorter than the 1/8 is too small to
+// see at all, so it keeps that height and is told apart by being dimmer instead.
+const RULER_LEVELS: Array<{ whole: number; height: number; dim?: boolean }> = [
+    { whole: 1,      height: 11 },            // 1/1
+    { whole: 0.5,    height: 8 },             // 1/2
+    { whole: 0.25,   height: 5 },             // 1/4
+    { whole: 0.125,  height: 3 },             // 1/8
+    { whole: 0.0625, height: 3, dim: true },  // 1/16
+];
+const RULER_MARK    = '#6f6f6f';
+const RULER_MARK_DIM = '#454545';
+// Below this a division's marks are too close together to tell apart, so it is
+// dropped rather than drawn as a smear.
+const RULER_MIN_SPACING = 6;
 
 const BOTTOM_LINE_Y = 80;   // y offset of the bottom staff line inside a lane
 const TOP_LINE_Y    = 40;   // y offset of the top staff line inside a lane
@@ -133,10 +169,9 @@ interface NoteInfo {
 // zoom / scroll state.  noteAreaX is where actual note glyphs begin (after
 // the clef / time-sig header and the left pad).
 //
-// pxPerTick is per-measure rather than global because a measure's note area is
-// never allowed below MIN_CONTENT_W — at low zoom short measures get stretched
-// and everything (rendering, hit testing, the playhead) must agree on the same
-// scale, so it travels with the layout.
+// pxPerTick is carried on the layout even though it is now the same for every
+// measure: rendering, hit testing and the playhead all read it from here, so
+// there is one place to change if that ever stops being true.
 interface MeasureVisualLayout extends MeasureLayout {
     visualStartX: number;   // left barline of the measure column
     headerWidth: number;    // lead-in + clef + key-sig + time-sig + left pad
@@ -178,6 +213,12 @@ export class ScoreView extends LitElement {
     @property() duration: NoteDuration = 'quarter';
     @property() mode: ScoreMode = 'edit';
     @property() grid: ScoreGrid = 'auto';
+    @property({ type: Boolean }) snapEnabled = true;
+    @property({ type: Boolean }) showRuler = true;
+    /** Pointer position for the ruler marker. Plain field, not reactive state:
+        the overlay redraws every frame, so marking it would re-render Lit on
+        every mouse move for nothing. */
+    private pointerX: number | null = null;
 
     @state() private currentTick = 0;
     @state() private selection = new Set<string>();
@@ -186,7 +227,9 @@ export class ScoreView extends LitElement {
     private anchorTrackIdx = 0;
     @state() private hs = 0;
     @state() private vs = 0;
-    @state() private zoom = 1.0;
+    /** Horizontal zoom. Owned by the parent: the toolbar shows it and can set
+        it, and ctrl + wheel here reports a change rather than applying one. */
+    @property({ type: Number }) zoom = 1.0;
 
     @query('.canvas-container') private canvasContainer?: HTMLElement;
     @query('#main-canvas') private mainCanvas?: HTMLCanvasElement;
@@ -595,7 +638,7 @@ export class ScoreView extends LitElement {
 
             const timeSigX = x + MEASURE_LEAD_IN + (showClef ? CLEF_W : 0) + keySigWidth;
             const noteAreaX    = x + headerWidth;
-            const contentWidth = Math.max(MIN_CONTENT_W, m.durationTicks * this.basePxPerTick);
+            const contentWidth = m.durationTicks * this.basePxPerTick;
             const barlineX     = noteAreaX + contentWidth + MEASURE_PAD_R;
 
             result.push({
@@ -671,44 +714,26 @@ export class ScoreView extends LitElement {
 
     // ─── Duration helpers ─────────────────────────────────────────────────────
 
+    // Length of a newly inserted note. Through the shared model, which is also
+    // where `auto` snapping reads it from, so the two cannot diverge.
     private get ticksForDuration(): number {
-        const ppqn = this.doc?.ppqn ?? 480;
-        switch (this.duration) {
-            case 'quarter':   return ppqn;
-            case 'eighth':    return Math.floor(ppqn / 2);
-            case 'sixteenth': return Math.floor(ppqn / 4);
-        }
+        return durationTicks(this.duration, this.doc?.ppqn ?? 480);
     }
 
-    // Active snap resolution in ticks; 0 means snapping is off.
-    // 'auto' follows the selected note duration, which keeps the common case
-    // (lay down a run of same-length notes) aligned without any extra setup.
+    /** Active snap step in ticks; 0 means snapping is off. See models/snap.ts. */
     private get gridTicks(): number {
-        const ppqn = this.doc?.ppqn ?? 480;
-        switch (this.grid) {
-            case 'off':  return 0;
-            case '1/4':  return ppqn;
-            case '1/8':  return Math.floor(ppqn / 2);
-            case '1/16': return Math.floor(ppqn / 4);
-            case '1/32': return Math.floor(ppqn / 8);
-            default:     return this.ticksForDuration;
-        }
+        return snapTicks(this.snapEnabled, this.grid, this.duration, this.doc?.ppqn ?? 480);
     }
 
-    // Snap to the *nearest* grid line, not the one before it: flooring meant a
-    // click a hair past a beat still landed on the previous one, which reads as
-    // notes being yanked backwards onto each other.
     private snapTick(tick: number): number {
-        const g = this.gridTicks;
-        if (g <= 0) return Math.max(0, Math.round(tick));
-        return Math.max(0, Math.round(tick / g) * g);
+        return snapToGrid(tick, this.gridTicks);
     }
 
-    // Grid step for drag deltas and resize quantisation.  With snapping off,
-    // fall back to a 32nd so drags stay on sane tick values.
+    // Step for drag deltas and resize quantisation. With snapping off a drag
+    // moves by whole ticks, so a note ends up exactly where it was dragged —
+    // the previous fallback to a 32nd meant "off" still quantised.
     private get dragGridTicks(): number {
-        const g = this.gridTicks;
-        return g > 0 ? g : Math.max(1, Math.floor((this.doc?.ppqn ?? 480) / 8));
+        return Math.max(1, this.gridTicks);
     }
 
     // Glyph shape for a resolved notation value. Committed notes and rests always
@@ -792,7 +817,18 @@ export class ScoreView extends LitElement {
 
     // ─── Hit testing ──────────────────────────────────────────────────────────
 
-    private trackIndexAt(cy: number) { return Math.floor((cy + this.vs) / TH); }
+    /** Height the ruler takes off the top of the lane area, 0 when hidden. */
+    private get rulerHeight(): number { return this.showRuler ? RULER_H : 0; }
+
+    // Every lane position goes through these two, so showing the ruler shifts
+    // rendering and hit testing together instead of one at a time.
+    private laneTop(trackIdx: number): number {
+        return this.rulerHeight + trackIdx * TH - this.vs;
+    }
+
+    private trackIndexAt(cy: number) {
+        return Math.floor((cy - this.rulerHeight + this.vs) / TH);
+    }
 
     private stepAtCanvasY(cy: number, trackIdx: number): number {
         const yt = (cy + this.vs) % TH;
@@ -812,7 +848,7 @@ export class ScoreView extends LitElement {
         if (trackIdx < 0 || trackIdx >= this.doc.tracks.length) return null;
 
         const visualMeasures = this.visualsFor(trackIdx);
-        const yBase = trackIdx * TH - this.vs;
+        const yBase = this.laneTop(trackIdx);
         const clef  = this.clefFor(trackIdx);
 
         // Adjacent diatonic steps are only 5px apart, so hit boxes overlap and
@@ -993,6 +1029,7 @@ export class ScoreView extends LitElement {
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
 
+        this.pointerX = cx;
         this.updateHover(cx, cy);
         if (!this.drag) return;
 
@@ -1065,7 +1102,7 @@ export class ScoreView extends LitElement {
 
         const s = d.additive ? new Set(this.selection) : new Set<string>();
         this.doc.tracks.forEach((_track, trackIdx) => {
-            const laneTop = trackIdx * TH - this.vs;
+            const laneTop = this.laneTop(trackIdx);
             if (laneTop > bottom || laneTop + TH < top) return;
             const visuals = this.visualsFor(trackIdx);
             const clef = this.clefFor(trackIdx);
@@ -1084,6 +1121,7 @@ export class ScoreView extends LitElement {
 
     private handleMouseLeave(_e: MouseEvent) {
         this.hover = null;
+        this.pointerX = null;
         if (this.drag) this.commitDrag();
     }
 
@@ -1124,7 +1162,7 @@ export class ScoreView extends LitElement {
         if (!this.doc) return false;
         const trackIdx = this.trackIndexAt(cy);
         if (trackIdx < 0 || trackIdx >= this.doc.tracks.length) return false;
-        const yBase = trackIdx * TH - this.vs;
+        const yBase = this.laneTop(trackIdx);
         // Only the staff band counts, so clicks above or below stay with the tools.
         if (cy < yBase + TOP_LINE_Y - 4 || cy > yBase + BOTTOM_LINE_Y + 4) return false;
 
@@ -1246,7 +1284,7 @@ export class ScoreView extends LitElement {
         if (!track) return '';
         // Sits over the label column, vertically centred in its lane — the same
         // place the canvas draws the name.
-        const top = idx * TH - this.vs + TH / 2 - 12;
+        const top = this.laneTop(idx) + TH / 2 - 12;
         return html`
             <input id="track-name-editor" class="track-name-editor"
                    style="top:${top}px; left:6px; width:${STAFF_LABEL_W - 12}px"
@@ -1272,8 +1310,14 @@ export class ScoreView extends LitElement {
             // shifts every measure column uniformly, so correcting by the drift
             // the new zoom introduced is exact even with headers and pads.
             const tickAtMouse = this.canvasXToTickAware(mouseX);
-            this.zoom = Math.max(0.1, Math.min(5.0, this.zoom - e.deltaY * 0.001));
+            // Applied locally first so the scroll correction below is computed
+            // against the new scale; the parent then confirms it through the
+            // property, which is what keeps the toolbar readout in step.
+            this.zoom = clampZoom(this.zoom * Math.exp(-e.deltaY * 0.001));
             this.setHs(this.hs + (this.tickToCanvasXAware(tickAtMouse) - mouseX));
+            this.dispatchEvent(new CustomEvent('zoom-change', {
+                detail: { zoom: this.zoom }, bubbles: true, composed: true,
+            }));
         } else if (e.shiftKey) {
             // Shift + wheel scrolls horizontally.  A plain mouse reports no
             // deltaX at all, so without this there was no way to reach later
@@ -1299,7 +1343,7 @@ export class ScoreView extends LitElement {
 
     private get maxVs(): number {
         const tracks = this.doc?.tracks.length ?? 0;
-        return Math.max(0, tracks * TH - this.viewportRect().height);
+        return Math.max(0, tracks * TH - (this.viewportRect().height - this.rulerHeight));
     }
 
     // Keep at least one lane in view instead of scrolling off into blank space.
@@ -1504,14 +1548,78 @@ export class ScoreView extends LitElement {
         ctx.clearRect(0, 0, rect.width, rect.height);
 
         const first = Math.max(0, Math.floor(this.vs / TH));
-        const last  = Math.min(this.doc.tracks.length - 1, Math.floor((this.vs + rect.height) / TH));
+        const last  = Math.min(this.doc.tracks.length - 1,
+                               Math.floor((this.vs + rect.height - this.rulerHeight) / TH));
         for (let i = first; i <= last; i++) this.renderTrack(ctx, i, rect.width);
+        this.renderRuler(ctx, rect.width);
+    }
+
+    // The ruler band. Divisions are measured from each bar line rather than from
+    // tick zero, so a meter change does not leave the marks running out of step
+    // with the music.
+    private renderRuler(ctx: CanvasRenderingContext2D, width: number) {
+        if (!this.showRuler || !this.doc) return;
+        const ppqn = this.doc.ppqn;
+        const bottom = RULER_H;
+
+        ctx.fillStyle = '#232323';
+        ctx.fillRect(0, 0, width, RULER_H);
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, RULER_H + 0.5);
+        ctx.lineTo(width, RULER_H + 0.5);
+        ctx.stroke();
+
+        this.withNoteAreaClip(ctx, () => {
+            // Collected per colour and stroked in two passes: a canvas path
+            // carries one stroke style, and the finest division is drawn dimmer.
+            const marks: Array<Array<[number, number]>> = [[], []];
+
+            for (const vm of this.visualsFor(0)) {
+                if (vm.barlineX <= STAFF_LABEL_W || vm.visualStartX >= width) continue;
+
+                // Only the divisions whose marks stay far enough apart to read.
+                const levels = RULER_LEVELS.filter(
+                    l => l.whole * 4 * ppqn * vm.pxPerTick >= RULER_MIN_SPACING);
+                const finest = levels.length
+                    ? levels[levels.length - 1].whole * 4 * ppqn
+                    : vm.durationTicks;
+
+                for (let t = 0; t < vm.durationTicks; t += finest) {
+                    // The coarsest division this position falls on wins, so a
+                    // bar line is taller than the beat marks inside it.
+                    const level = t === 0 ? RULER_LEVELS[0]
+                                          : levels.find(l => t % (l.whole * 4 * ppqn) === 0);
+                    if (!level) continue;
+                    const x = Math.round(vm.noteAreaX + t * vm.pxPerTick) + 0.5;
+                    marks[level.dim ? 1 : 0].push([x, level.height]);
+                }
+            }
+
+            ctx.lineWidth = 1;
+            [RULER_MARK, RULER_MARK_DIM].forEach((colour, i) => {
+                if (marks[i].length === 0) return;
+                ctx.strokeStyle = colour;
+                ctx.beginPath();
+                for (const [x, height] of marks[i]) {
+                    ctx.moveTo(x, bottom);
+                    ctx.lineTo(x, bottom - height);
+                }
+                ctx.stroke();
+            });
+        });
+
+        // The label column sits over the marks, so the ruler stops where the
+        // staves do rather than running under the track names.
+        ctx.fillStyle = '#232323';
+        ctx.fillRect(0, 0, STAFF_LABEL_W, RULER_H);
     }
 
     private renderTrack(ctx: CanvasRenderingContext2D, trackIdx: number, width: number) {
         if (!this.doc) return;
         const track  = this.doc.tracks[trackIdx];
-        const yBase  = trackIdx * TH - this.vs;
+        const yBase  = this.laneTop(trackIdx);
         const rect   = this.viewportRect();
 
         // Staff lines
@@ -2093,7 +2201,7 @@ export class ScoreView extends LitElement {
     // Translucent notehead plus a snap marker at the exact tick/pitch a click
     // would commit, so the snap result is visible before anything is created.
     private renderInsertPreview(ctx: CanvasRenderingContext2D, h: HoverTarget) {
-        const yBase = h.trackIdx * TH - this.vs;
+        const yBase = this.laneTop(h.trackIdx);
         const clef  = this.clefFor(h.trackIdx);
         const x     = this.tickToCanvasXAware(h.tick);
         const spelling = spellPitch(h.pitch, keyAt(this.doc?.keySignatureMap, h.tick).fifths);
@@ -2161,6 +2269,30 @@ export class ScoreView extends LitElement {
         // label column.  The playhead and the caret check their own x below, but
         // the marquee and the insert-tool ghost would otherwise spill.
         this.withNoteAreaClip(ctx, () => this.renderOverlayContent(ctx, rect));
+        this.renderRulerMarker(ctx);
+    }
+
+    // Marker following the pointer, drawn in the ruler band.
+    private renderRulerMarker(ctx: CanvasRenderingContext2D) {
+        const x = this.pointerX;
+        if (!this.showRuler || x === null || x < STAFF_LABEL_W) return;
+
+        ctx.save();
+        ctx.fillStyle = '#e0c060';
+        ctx.beginPath();
+        ctx.moveTo(x - 4, 1);
+        ctx.lineTo(x + 4, 1);
+        ctx.lineTo(x, 8);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(224, 192, 96, 0.55)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x) + 0.5, 8);
+        ctx.lineTo(Math.round(x) + 0.5, RULER_H);
+        ctx.stroke();
+        ctx.restore();
     }
 
     private renderOverlayContent(ctx: CanvasRenderingContext2D, rect: DOMRect) {

@@ -6,6 +6,8 @@ import { applyDocumentPatch, DocumentPatch } from '../bridge/documentPatch';
 import type { ScoreTool, NoteDuration, ScoreMode, ScoreGrid } from './score/score-toolbar';
 import type { EditAction, ScoreView } from './score/score-view';
 import { pitchName } from '../models/pitch';
+import { snapTicks } from '../models/snap';
+import { clampZoom } from './score/score-view';
 
 import './transport/transport-bar';
 import './score/score-toolbar';
@@ -27,6 +29,11 @@ export class AppRoot extends LitElement {
     @state() private activeTool: ScoreTool = 'select';
     @state() private activeDuration: NoteDuration = 'quarter';
     @state() private activeGrid: ScoreGrid = 'auto';
+    /** Whether the grid above applies at all. Separate from the resolution, so
+        turning snap off and back on returns to the grid that was in use. */
+    @state() private snapEnabled = true;
+    @state() private zoom = 1;
+    @state() private showRuler = true;
     @state() private activeMode: ScoreMode = 'edit';
     /** Which menu is dropped down, if any. */
     @state() private openMenu: 'file' | 'edit' | 'help' | null = null;
@@ -526,9 +533,16 @@ export class AppRoot extends LitElement {
                     <mc-score-toolbar
                         .canUndo=${doc.canUndo}
                         .canRedo=${doc.canRedo}
+                        .snapEnabled=${this.snapEnabled}
+                        .showRuler=${this.showRuler}
+                        .zoom=${this.zoom}
                         @tool-change=${(e: CustomEvent) => { this.activeTool = e.detail.tool; }}
                         @duration-change=${(e: CustomEvent) => { this.activeDuration = e.detail.duration; }}
                         @grid-change=${(e: CustomEvent) => { this.activeGrid = e.detail.grid; }}
+                        @snap-toggle=${(e: CustomEvent) => { this.snapEnabled = e.detail.enabled; }}
+                        @ruler-toggle=${(e: CustomEvent) => { this.showRuler = e.detail.showRuler; }}
+                        @zoom-step=${(e: CustomEvent) => { this.zoom = clampZoom(this.zoom * e.detail.factor); }}
+                        @zoom-set=${(e: CustomEvent) => { this.zoom = clampZoom(e.detail.zoom); }}
                         @mode-change=${(e: CustomEvent) => { this.activeMode = e.detail.mode; }}
                         @score-undo=${() => this.handleUndo()}
                         @score-redo=${() => this.handleRedo()}
@@ -541,7 +555,11 @@ export class AppRoot extends LitElement {
                         .tool=${this.activeTool}
                         .duration=${this.activeDuration}
                         .grid=${this.activeGrid}
-                        .mode=${this.activeMode}>
+                        .snapEnabled=${this.snapEnabled}
+                        .showRuler=${this.showRuler}
+                        .zoom=${this.zoom}
+                        .mode=${this.activeMode}
+                        @zoom-change=${(e: CustomEvent) => { this.zoom = e.detail.zoom; }}>
                     </mc-score-view>
                 </div>
                 <div class="mixer-area">
@@ -560,7 +578,9 @@ export class AppRoot extends LitElement {
                             ${this.eventsCollapsed ? '▲' : '▼'}
                         </span>
                     </div>
-                    ${!this.eventsCollapsed ? html`<mc-midi-events-panel .doc=${doc}></mc-midi-events-panel>` : ''}
+                    ${!this.eventsCollapsed ? html`<mc-midi-events-panel .doc=${doc}
+                        .snapTicks=${snapTicks(this.snapEnabled, this.activeGrid,
+                                               this.activeDuration, doc.ppqn)}></mc-midi-events-panel>` : ''}
                 </div>
             </div>
         `;
