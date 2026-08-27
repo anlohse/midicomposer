@@ -5,6 +5,7 @@ import { DocumentSnapshot } from '../models/document';
 import { applyDocumentPatch, DocumentPatch } from '../bridge/documentPatch';
 import type { ScoreTool, NoteDuration, ScoreMode, ScoreGrid } from './score/score-toolbar';
 import type { EditAction, ScoreView } from './score/score-view';
+import { pitchName } from '../models/pitch';
 
 import './transport/transport-bar';
 import './score/score-toolbar';
@@ -29,6 +30,13 @@ export class AppRoot extends LitElement {
     @state() private activeMode: ScoreMode = 'edit';
     /** Which menu is dropped down, if any. */
     @state() private openMenu: 'file' | 'edit' | 'help' | null = null;
+
+    // ── Transpose dialog ─────────────────────────────────────────────────────
+    // The selection cannot change while the dialog is up, so its pitch span is
+    // read once on opening and the preview works off that.
+    @state() private transposeRange: { min: number; max: number; count: number } | null = null;
+    @state() private transposeUnit: 'semitones' | 'octaves' = 'semitones';
+    @state() private transposeAmount = 1;
 
     @query('mc-score-view') private scoreView?: ScoreView;
 
@@ -190,9 +198,50 @@ export class AppRoot extends LitElement {
                 border: none;
                 border-radius: 2px;
             }
-            button:hover {
+            button:hover:not(:disabled) {
                 background: #0062a3;
             }
+            button:disabled {
+                background: #3a3a3a;
+                color: #777;
+                cursor: default;
+            }
+
+            /* ── Transpose dialog ─────────────────────────────────────────── */
+            .modal-content.transpose { min-width: 340px; }
+            .modal-content.transpose h3 { margin: 0 0 0.6rem; }
+            .transpose .subject { color: #bbb; margin: 0 0 1.1rem; font-size: 0.9rem; }
+            .transpose-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .transpose-row label { color: #8a8a8a; font-size: 0.9rem; }
+            .transpose-row input, .transpose-row select {
+                background: #1e1e1e;
+                border: 1px solid #4a4a4a;
+                color: #ddd;
+                font: inherit;
+                padding: 4px 6px;
+                border-radius: 2px;
+            }
+            .transpose-row input { width: 72px; text-align: right; }
+            .transpose-row input:focus, .transpose-row select:focus {
+                outline: none;
+                border-color: #007acc;
+            }
+            .transpose .hint { color: #6f6f6f; font-size: 0.78rem; margin: 0.45rem 0 0; }
+            .transpose .preview {
+                margin: 1rem 0 0;
+                font-size: 0.9rem;
+                color: #bbb;
+                min-height: 1.2em;
+            }
+            .transpose .preview .delta { color: #6f6f6f; }
+            .transpose .preview.bad { color: #ff8080; }
+            .transpose .modal-footer { display: flex; gap: 8px; justify-content: flex-end; }
+            .transpose button.secondary { background: #3a3a3a; }
+            .transpose button.secondary:hover { background: #474747; }
 
             /* Layout Grid */
             .main-layout {
@@ -384,6 +433,7 @@ export class AppRoot extends LitElement {
 
             ${this.showAbout ? this.renderAbout() : ''}
             ${this.showHelp ? this.renderHelp() : ''}
+            ${this.transposeRange ? this.renderTranspose() : ''}
         `;
     }
 
@@ -451,6 +501,8 @@ export class AppRoot extends LitElement {
             ${item('Delete', act('delete'), selected, 'Del')}
             ${separator}
             ${item('Select All', act('selectAll'), editing, 'Ctrl+A')}
+            ${separator}
+            ${item('Transpose…', () => this.openTranspose(), selected)}
         `;
     }
 
@@ -509,6 +561,122 @@ export class AppRoot extends LitElement {
                         </span>
                     </div>
                     ${!this.eventsCollapsed ? html`<mc-midi-events-panel .doc=${doc}></mc-midi-events-panel>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    // ─── Transpose ────────────────────────────────────────────────────────────
+
+    private openTranspose() {
+        // Nothing selected means nothing to transpose, and the menu item is
+        // disabled in that case — this is the guard for every other route in.
+        const range = this.scoreView?.selectionPitchRange ?? null;
+        if (!range) return;
+        this.transposeRange = range;
+        // autofocus only applies to markup present at page load, so put the
+        // caret in the amount field once Lit has rendered the dialog.
+        this.updateComplete.then(() => {
+            const input = this.shadowRoot?.getElementById('transpose-amount') as HTMLInputElement | null;
+            input?.focus();
+            input?.select();
+        });
+    }
+
+    private closeTranspose() {
+        this.transposeRange = null;
+    }
+
+    /** The shift in semitones, which is what the core is told either way. */
+    private get transposeSemitones(): number {
+        const step = this.transposeUnit === 'octaves' ? 12 : 1;
+        return Math.trunc(this.transposeAmount) * step;
+    }
+
+    private get transposeResult(): { min: number; max: number; fits: boolean } | null {
+        const range = this.transposeRange;
+        if (!range) return null;
+        const min = range.min + this.transposeSemitones;
+        const max = range.max + this.transposeSemitones;
+        return { min, max, fits: min >= 0 && max <= 127 };
+    }
+
+    private async applyTranspose() {
+        const result = this.transposeResult;
+        if (!result?.fits || this.transposeSemitones === 0) return;
+        const view = this.scoreView;
+        this.closeTranspose();
+        await view?.transposeSelection(this.transposeSemitones);
+    }
+
+    renderTranspose() {
+        const range = this.transposeRange!;
+        const result = this.transposeResult!;
+        const semitones = this.transposeSemitones;
+        // The limit is what still fits: an octave step past the edge of the MIDI
+        // range is not a useful thing to offer.
+        const limit = this.transposeUnit === 'octaves' ? 10 : 127;
+
+        return html`
+            <div class="modal-overlay" @click=${() => this.closeTranspose()}>
+                <div class="modal-content transpose" @click=${(e: Event) => e.stopPropagation()}
+                     @keydown=${(e: KeyboardEvent) => {
+                         // The dialog owns these keys; the score view listens on
+                         // window and would otherwise act on them too.
+                         e.stopPropagation();
+                         if (e.key === 'Enter') { e.preventDefault(); this.applyTranspose(); }
+                         if (e.key === 'Escape') { e.preventDefault(); this.closeTranspose(); }
+                     }}>
+                    <h3>Transpose</h3>
+                    <p class="subject">
+                        ${range.count} ${range.count === 1 ? 'note' : 'notes'} selected —
+                        ${range.min === range.max
+                            ? pitchName(range.min)
+                            : `${pitchName(range.min)} to ${pitchName(range.max)}`}
+                    </p>
+
+                    <div class="transpose-row">
+                        <label for="transpose-amount">By</label>
+                        <input id="transpose-amount" type="number"
+                               .value=${String(this.transposeAmount)}
+                               min=${-limit} max=${limit} step="1"
+                               @input=${(e: Event) => {
+                                   // Only commit a parseable value: a lone "-"
+                                   // on the way to "-5" would otherwise be
+                                   // rewritten to 0 under the user's cursor.
+                                   const raw = parseInt((e.target as HTMLInputElement).value, 10);
+                                   if (Number.isFinite(raw)) this.transposeAmount = raw;
+                               }}>
+                        <select id="transpose-unit"
+                                @change=${(e: Event) => {
+                                    this.transposeUnit =
+                                        (e.target as HTMLSelectElement).value as 'semitones' | 'octaves';
+                                }}>
+                            <option value="semitones"
+                                ?selected=${this.transposeUnit === 'semitones'}>semitones</option>
+                            <option value="octaves"
+                                ?selected=${this.transposeUnit === 'octaves'}>octaves</option>
+                        </select>
+                    </div>
+                    <p class="hint">Negative values transpose down.</p>
+
+                    <p class="preview ${result.fits ? '' : 'bad'}">
+                        ${semitones === 0
+                            ? 'No change.'
+                            : result.fits
+                                ? html`Result:
+                                       ${result.min === result.max
+                                           ? pitchName(result.min)
+                                           : `${pitchName(result.min)} to ${pitchName(result.max)}`}
+                                       <span class="delta">(${semitones > 0 ? '+' : ''}${semitones} st)</span>`
+                                : `Out of range — a note would land outside MIDI 0-127.`}
+                    </p>
+
+                    <div class="modal-footer">
+                        <button class="secondary" @click=${() => this.closeTranspose()}>Cancel</button>
+                        <button ?disabled=${!result.fits || semitones === 0}
+                                @click=${() => this.applyTranspose()}>OK</button>
+                    </div>
                 </div>
             </div>
         `;

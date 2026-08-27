@@ -403,6 +403,40 @@ export class ScoreView extends LitElement {
         }
     }
 
+    /**
+     * Pitch span of the selection, for a caller that needs to know what a
+     * transposition would do to it. Null when nothing is selected.
+     */
+    get selectionPitchRange(): { min: number; max: number; count: number } | null {
+        const sel = this.selectedNotes();
+        if (sel.length === 0) return null;
+        const pitches = sel.map(({ note }) => note.pitch as number);
+        return { min: Math.min(...pitches), max: Math.max(...pitches), count: pitches.length };
+    }
+
+    /**
+     * Shifts every selected note by `semitones`, as a single undo step.
+     *
+     * Refuses rather than clamps when the result would leave the MIDI range:
+     * clamping would silently flatten the intervals between the notes, which is
+     * a worse answer than not transposing at all. Returns false in that case.
+     */
+    async transposeSelection(semitones: number): Promise<boolean> {
+        if (this.mode !== 'edit' || semitones === 0) return false;
+        const sel = this.selectedNotes();
+        if (sel.length === 0) return false;
+        if (sel.some(({ note }) => note.pitch + semitones < 0 || note.pitch + semitones > 127)) {
+            return false;
+        }
+        // The pitch changes but the id and start tick do not, so the selection
+        // still addresses the same notes afterwards.
+        await this.sendBatch(sel.map(({ note, track }) => ({
+            type: 'UpdateNote', trackId: parseInt(track.id), noteId: parseInt(note.id),
+            pitch: note.pitch + semitones,
+        })));
+        return true;
+    }
+
     get hasSelection(): boolean { return this.selection.size > 0; }
     get canPaste(): boolean { return noteClipboard.length > 0; }
 
