@@ -8,6 +8,7 @@ import { GM_FAMILIES, gmProgramName, isPercussionChannel } from '../../models/gm
 import { CLEFS, CLEF_ORDER, clefDef } from '../../models/clef';
 import { BEND_MAX, BEND_MIN, DEFAULT_CONTROLLER, DEFAULT_CONTROLLER_VALUE,
          bendLabel, controllerName } from '../../models/midiController';
+import { fieldCoarseStep, fieldStep } from '../../models/snap';
 import '../common/value-field';
 
 type EventKind = 'Note' | 'CC' | 'PitchBend' | 'ProgramChange';
@@ -36,6 +37,13 @@ const ALL_TRACKS = -1;
 @customElement('mc-midi-events-panel')
 export class MidiEventsPanel extends LitElement {
     @property({ type: Object }) doc?: DocumentSnapshot;
+    /**
+     * The score view's snap step in ticks, 0 when snapping is off. Tick and
+     * duration fields step by the same amount the score does, so the two ways
+     * of moving an event agree — and with snapping off they step by one tick,
+     * which is the only way to reach a position the score can now place.
+     */
+    @property({ type: Number }) snapTicks = 0;
 
     // Which track's events are listed, and whose parameters the header edits.
     @state() private trackFilter = ALL_TRACKS;
@@ -430,9 +438,8 @@ export class MidiEventsPanel extends LitElement {
 
     private renderRow(ev: PanelEvent) {
         const ppqn = this.doc?.ppqn ?? 480;
-        // Steps for tick/duration are musical, not per-tick: a sixteenth by
-        // default, a quarter with Shift.
-        const tickStep = Math.max(1, Math.floor(ppqn / 4));
+        const tickStep = fieldStep(this.snapTicks);
+        const coarseStep = fieldCoarseStep(this.snapTicks, ppqn);
 
         // A program change is the track's instrument, edited through the
         // selector in the bar above; editing it here as a raw number would give
@@ -458,7 +465,7 @@ export class MidiEventsPanel extends LitElement {
                     <td>
                         <mc-value-field label="Tick"
                             .value=${ev.tick} .min=${0} .max=${100_000_000}
-                            .step=${tickStep} .coarse=${ppqn}
+                            .step=${tickStep} .coarse=${coarseStep}
                             @value-change=${(e: CustomEvent<{ value: number }>) =>
                                 this.editEvent(ev, { tick: e.detail.value })}>
                         </mc-value-field>
@@ -507,7 +514,7 @@ export class MidiEventsPanel extends LitElement {
                 <td>
                     <mc-value-field label="Start tick"
                         .value=${ev.tick} .min=${0} .max=${100_000_000}
-                        .step=${tickStep} .coarse=${ppqn}
+                        .step=${tickStep} .coarse=${coarseStep}
                         @value-change=${(e: CustomEvent<{ value: number }>) =>
                             this.editNote(ev, 'tick', e.detail.value)}>
                     </mc-value-field>
@@ -532,7 +539,7 @@ export class MidiEventsPanel extends LitElement {
                 <td>
                     <mc-value-field label="Duration"
                         .value=${ev.durationTicks!} .min=${1} .max=${100_000_000}
-                        .step=${tickStep} .coarse=${ppqn}
+                        .step=${tickStep} .coarse=${coarseStep}
                         @value-change=${(e: CustomEvent<{ value: number }>) =>
                             this.editNote(ev, 'duration', e.detail.value)}>
                     </mc-value-field>
