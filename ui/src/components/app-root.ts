@@ -32,6 +32,10 @@ export class AppRoot extends LitElement {
     /** Whether the grid above applies at all. Separate from the resolution, so
         turning snap off and back on returns to the grid that was in use. */
     @state() private snapEnabled = true;
+    /** Triplet mode. Held here rather than in the toolbar because it changes the
+        value being inserted, the grid it snaps to and the step the events panel
+        uses, and those three must never be reading different answers. */
+    @state() private tripletMode = false;
     @state() private zoom = 1;
     @state() private showRuler = true;
     @state() private activeMode: ScoreMode = 'edit';
@@ -534,12 +538,14 @@ export class AppRoot extends LitElement {
                         .canUndo=${doc.canUndo}
                         .canRedo=${doc.canRedo}
                         .snapEnabled=${this.snapEnabled}
+                        .tripletMode=${this.tripletMode}
                         .showRuler=${this.showRuler}
                         .zoom=${this.zoom}
                         @tool-change=${(e: CustomEvent) => { this.activeTool = e.detail.tool; }}
                         @duration-change=${(e: CustomEvent) => { this.activeDuration = e.detail.duration; }}
                         @grid-change=${(e: CustomEvent) => { this.activeGrid = e.detail.grid; }}
                         @snap-toggle=${(e: CustomEvent) => { this.snapEnabled = e.detail.enabled; }}
+                        @triplet-toggle=${(e: CustomEvent) => { this.tripletMode = e.detail.triplet; }}
                         @ruler-toggle=${(e: CustomEvent) => { this.showRuler = e.detail.showRuler; }}
                         @zoom-step=${(e: CustomEvent) => { this.zoom = clampZoom(this.zoom * e.detail.factor); }}
                         @zoom-set=${(e: CustomEvent) => { this.zoom = clampZoom(e.detail.zoom); }}
@@ -556,6 +562,7 @@ export class AppRoot extends LitElement {
                         .duration=${this.activeDuration}
                         .grid=${this.activeGrid}
                         .snapEnabled=${this.snapEnabled}
+                        .triplet=${this.tripletMode}
                         .showRuler=${this.showRuler}
                         .zoom=${this.zoom}
                         .mode=${this.activeMode}
@@ -580,7 +587,8 @@ export class AppRoot extends LitElement {
                     </div>
                     ${!this.eventsCollapsed ? html`<mc-midi-events-panel .doc=${doc}
                         .snapTicks=${snapTicks(this.snapEnabled, this.activeGrid,
-                                               this.activeDuration, doc.ppqn)}></mc-midi-events-panel>` : ''}
+                                               this.activeDuration, doc.ppqn,
+                                               this.tripletMode)}></mc-midi-events-panel>` : ''}
                 </div>
             </div>
         `;
