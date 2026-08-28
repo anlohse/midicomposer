@@ -99,6 +99,11 @@ endif()
 target_compile_definitions(midi_composer_core
     PUBLIC
         SPDLOG_FMT_EXTERNAL
+    PRIVATE
+        # The one place the version is written down is project() above. The
+        # installer already read it from there; the About box used to carry its
+        # own copy and drifted two releases behind.
+        MIDI_COMPOSER_VERSION="${PROJECT_VERSION}"
 )
 
 set_project_warnings(midi_composer_core)
