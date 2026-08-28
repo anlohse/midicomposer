@@ -10,7 +10,7 @@ import { ACCIDENTAL_TEXT, AccidentalGlyph, accidentalFor, cancellationCount,
          cancellationSteps, keyAt, signatureSteps, spellPitch,
          stepToKeyPitch } from '../../models/keySignature';
 import { DENOMINATORS } from '../../models/timeSignature';
-import { durationTicks, snapToGrid, snapTicks } from '../../models/snap';
+import { durationTicks, quantizeSpan, snapToGrid, snapTicks } from '../../models/snap';
 import { maxScroll, measureWindow, needsReveal, scrollStops, scrollThumb,
          snapToStop, stepStop, thumbDragToScroll } from '../../models/scoreScroll';
 import type { ScoreTool, NoteDuration, ScoreMode, ScoreGrid } from './score-toolbar';
@@ -32,6 +32,13 @@ export function clampZoom(zoom: number): number {
 const STEM_LEN         = 30;    // notehead-centre → stem tip
 const BEAM_H           = 4;     // beam bar thickness
 const BEAM_GAP         = 3;     // gap between beam bars (16th)
+
+// Triplet bracket: the number sits above the group, clear of the staff and of
+// any stem, with hooks turned down towards the notes at each end.
+const TUPLET_CLEARANCE = 8;     // gap above the highest stem tip or the staff
+const TUPLET_HOOK      = 4;     // length of the turned-down ends
+const TUPLET_GAP       = 7;     // half-width of the break the number sits in
+const TUPLET_COLOR     = '#cfcfcf';
 
 // ─── Measure geometry ────────────────────────────────────────────────────────
 //
@@ -214,6 +221,9 @@ export class ScoreView extends LitElement {
     @property() mode: ScoreMode = 'edit';
     @property() grid: ScoreGrid = 'auto';
     @property({ type: Boolean }) snapEnabled = true;
+    /** Triplet mode: inserted notes are two thirds of the selected value and the
+        grid snaps to the same division. */
+    @property({ type: Boolean }) triplet = false;
     @property({ type: Boolean }) showRuler = true;
     /** Pointer position for the ruler marker. Plain field, not reactive state:
         the overlay redraws every frame, so marking it would re-render Lit on
@@ -717,12 +727,13 @@ export class ScoreView extends LitElement {
     // Length of a newly inserted note. Through the shared model, which is also
     // where `auto` snapping reads it from, so the two cannot diverge.
     private get ticksForDuration(): number {
-        return durationTicks(this.duration, this.doc?.ppqn ?? 480);
+        return durationTicks(this.duration, this.doc?.ppqn ?? 480, this.triplet);
     }
 
     /** Active snap step in ticks; 0 means snapping is off. See models/snap.ts. */
     private get gridTicks(): number {
-        return snapTicks(this.snapEnabled, this.grid, this.duration, this.doc?.ppqn ?? 480);
+        return snapTicks(this.snapEnabled, this.grid, this.duration,
+                         this.doc?.ppqn ?? 480, this.triplet);
     }
 
     private snapTick(tick: number): number {
@@ -732,6 +743,10 @@ export class ScoreView extends LitElement {
     // Step for drag deltas and resize quantisation. With snapping off a drag
     // moves by whole ticks, so a note ends up exactly where it was dragged —
     // the previous fallback to a 32nd meant "off" still quantised.
+    //
+    // Not rounded: a triplet step rarely divides the ppqn evenly, and rounding it
+    // here would make a drag of six steps land several ticks short. quantizeSpan
+    // rounds the result instead, which keeps every step where it belongs.
     private get dragGridTicks(): number {
         return Math.max(1, this.gridTicks);
     }
@@ -788,7 +803,7 @@ export class ScoreView extends LitElement {
         const ppqn      = this.doc?.ppqn ?? 480;
         const beatTicks = Math.max(1, Math.floor(ppqn * 4 / vm.timeSignature.denominator));
         const singles: NoteFragment[]            = [];
-        const byBeat   = new Map<number, NoteFragment[]>();
+        const byBeat   = new Map<string, NoteFragment[]>();
 
         for (const f of sorted) {
             const isDragged =
@@ -798,7 +813,11 @@ export class ScoreView extends LitElement {
                 singles.push(f);
                 continue;
             }
-            const beat = Math.floor(f.startTick / beatTicks);
+            // Triplets beam with the group they belong to. Keying on the beat
+            // alone would beam a triplet eighth to a plain one sitting in the
+            // same beat, which reads as five notes in the time of four.
+            const beat = f.triplet ? `t${f.triplet.startTick}`
+                                   : `b${Math.floor(f.startTick / beatTicks)}`;
             if (!byBeat.has(beat)) byBeat.set(beat, []);
             byBeat.get(beat)!.push(f);
         }
@@ -1036,7 +1055,7 @@ export class ScoreView extends LitElement {
         if (this.drag.kind === 'resize') {
             const g = this.dragGridTicks;
             const raw = this.canvasXToTickAware(cx) - this.drag.originTick;
-            const newDuration = Math.max(g, Math.round(raw / g) * g);
+            const newDuration = Math.max(Math.round(g), quantizeSpan(raw, g));
             if (newDuration !== this.drag.curDuration) {
                 this.drag = { ...this.drag, curDuration: newDuration };
             }
@@ -1048,7 +1067,7 @@ export class ScoreView extends LitElement {
             const started = this.drag.started || dist > DRAG_THRESHOLD_PX;
             const g = this.dragGridTicks;
             const rawDelta = this.canvasXToTickAware(cx) - this.drag.pointerStartTick;
-            const deltaTick = Math.round(rawDelta / g) * g;
+            const deltaTick = quantizeSpan(rawDelta, g);
             // Read the pitch in the clef of the lane the drag started in, so
             // dragging over a staff with a different clef cannot skew the delta.
             const deltaPitch = this.canvasYtoPitch(cy, this.drag.trackIdx) - this.drag.pointerStartPitch;
@@ -1839,6 +1858,99 @@ export class ScoreView extends LitElement {
 
         // ── Rests ─────────────────────────────────────────────────────────────
         for (const r of vm.rests) this.renderRest(ctx, r, yBase, vm);
+
+        // ── Triplet brackets ──────────────────────────────────────────────────
+        // Last, so a bracket is never painted over by a notehead or a beam.
+        this.renderTuplets(ctx, yBase, vm, clef);
+    }
+
+    // A triplet is marked with a 3 over the group. The bracket that normally goes
+    // with it is dropped when the group is beamed: the beam already shows what it
+    // covers, and drawing both is the cluttered look engravers avoid.
+    private renderTuplets(
+        ctx: CanvasRenderingContext2D,
+        yBase: number,
+        vm: MeasureVisualLayout,
+        clef: ClefDef,
+    ) {
+        // Members of a group carry the identical span, so its start tick is the
+        // key — no re-deriving the grouping from tick arithmetic here.
+        const groups = new Map<number, {
+            xs: number[]; tops: number[]; notes: number; flagged: number;
+        }>();
+        const add = (startTick: number, x: number, top: number,
+                     isNote: boolean, flagged = false) => {
+            const g = groups.get(startTick) ?? { xs: [], tops: [], notes: 0, flagged: 0 };
+            g.xs.push(x);
+            g.tops.push(top);
+            if (isNote)  g.notes++;
+            if (flagged) g.flagged++;
+            groups.set(startTick, g);
+        };
+
+        for (const f of vm.fragments) {
+            if (!f.triplet) continue;
+            // Skip a note being dragged: its glyph is somewhere else this frame,
+            // and a bracket left behind at the old position reads as a second group.
+            if (this.drag?.kind === 'move' && this.drag.started &&
+                this.selection.has(noteKey(f.noteId))) continue;
+            const noteY = this.stepY(f.step, yBase, clef);
+            add(f.triplet.startTick, this.noteX(f.startTick, vm), noteY - STEM_LEN, true,
+                this.noteInfoFor(f.noteValue, f.dotted).flags >= 1);
+        }
+        for (const r of vm.rests) {
+            if (!r.triplet) continue;
+            add(r.triplet.startTick, this.noteX(r.startTick, vm), yBase + TOP_LINE_Y, false);
+        }
+
+        for (const [, g] of groups) {
+            // A group whose only member is a rest is silence, not a triplet worth
+            // marking: the bracket would point at nothing that sounds.
+            if (g.notes === 0) continue;
+            // Beamed means every note in the group carries a flag and so ends up
+            // under one beam — the same condition buildBeamGroups applies. A
+            // group of triplet quarters has no flags and no beam, so it needs the
+            // bracket; asking only whether the group has two or more notes would
+            // drop the bracket from exactly the case that depends on it.
+            const beamed = g.notes >= 2 && g.flagged === g.notes;
+            this.drawTupletBracket(ctx, g.xs, g.tops, yBase, beamed);
+        }
+    }
+
+    private drawTupletBracket(
+        ctx: CanvasRenderingContext2D,
+        xs: number[],
+        tops: number[],
+        yBase: number,
+        beamed: boolean,
+    ) {
+        // Above the staff and above every stem in the group, so the mark reads
+        // the same whichever way the stems happen to point.
+        const y = Math.min(yBase + TOP_LINE_Y, ...tops) - TUPLET_CLEARANCE;
+        const x0 = Math.min(...xs) + 2;
+        const x1 = Math.max(...xs) + NOTE_GLYPH_W - 2;
+        const mid = (x0 + x1) / 2;
+
+        ctx.strokeStyle = ctx.fillStyle = TUPLET_COLOR;
+        ctx.lineWidth = 1;
+
+        if (!beamed && x1 - x0 > TUPLET_GAP * 2 + 6) {
+            ctx.beginPath();
+            ctx.moveTo(x0, y + TUPLET_HOOK);
+            ctx.lineTo(x0, y);
+            ctx.lineTo(mid - TUPLET_GAP, y);
+            ctx.moveTo(mid + TUPLET_GAP, y);
+            ctx.lineTo(x1, y);
+            ctx.lineTo(x1, y + TUPLET_HOOK);
+            ctx.stroke();
+        }
+
+        ctx.font         = 'italic bold 11px serif';
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('3', mid, y);
+        ctx.textAlign    = 'left';
+        ctx.textBaseline = 'alphabetic';
     }
 
     // The clef glyph plus, for the transposing clefs, the 8 above or below it.

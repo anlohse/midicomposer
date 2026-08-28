@@ -7,7 +7,7 @@ import { SNAP_GRIDS, type SnapGrid } from '../../models/snap';
 const ZOOM_STEP = 1.5;
 
 export type ScoreTool = 'select' | 'insert' | 'erase' | 'resize';
-export type NoteDuration = 'quarter' | 'eighth' | 'sixteenth';
+export type NoteDuration = 'half' | 'quarter' | 'eighth' | 'sixteenth';
 export type ScoreMode = 'edit' | 'play';
 
 // Snap resolution. Whether snapping happens at all is a separate toggle, so
@@ -20,6 +20,10 @@ export class ScoreToolbar extends LitElement {
     @property({ type: Boolean }) canRedo = false;
     @property({ type: Boolean }) snapEnabled = true;
     @property({ type: Boolean }) showRuler = true;
+    /** Triplet mode: the duration buttons insert triplets and the grid snaps
+        to them. A modifier rather than four more grid entries, so the value
+        being inserted and the grid it lands on cannot disagree. */
+    @property({ type: Boolean }) tripletMode = false;
     /** Horizontal zoom, 1 = the default scale. Owned by the parent, because the
         score view also changes it (ctrl + wheel) and both must show the same. */
     @property({ type: Number }) zoom = 1;
@@ -55,6 +59,7 @@ export class ScoreToolbar extends LitElement {
             padding: 1px 2px;
         }
         select:disabled { opacity: 0.4; }
+        button.triplet { font-style: italic; font-weight: bold; padding: 2px 7px; }
         .zoom-group { gap: 2px; }
         .zoom-readout {
             font-size: 0.8rem;
@@ -124,9 +129,18 @@ export class ScoreToolbar extends LitElement {
                 <button ?disabled=${!editing} class=${t === 'erase'  ? 'active' : ''} @click=${() => this.selectTool('erase')}>Erase</button>
             </div>
             <div class="tool-group">
+                <button ?disabled=${!editing} class=${d === 'half'      ? 'active' : ''} @click=${() => this.selectDuration('half')}>1/2</button>
                 <button ?disabled=${!editing} class=${d === 'quarter'   ? 'active' : ''} @click=${() => this.selectDuration('quarter')}>1/4</button>
                 <button ?disabled=${!editing} class=${d === 'eighth'    ? 'active' : ''} @click=${() => this.selectDuration('eighth')}>1/8</button>
                 <button ?disabled=${!editing} class=${d === 'sixteenth' ? 'active' : ''} @click=${() => this.selectDuration('sixteenth')}>1/16</button>
+                <button id="triplet-toggle" class="triplet ${this.tripletMode ? 'active' : ''}"
+                        ?disabled=${!editing}
+                        title=${this.tripletMode
+                            ? 'Triplets on - three notes fill the next value up'
+                            : 'Triplets off - click for three-in-the-time-of-two'}
+                        @click=${() => this.emit('triplet-toggle', { triplet: !this.tripletMode })}>
+                    3
+                </button>
             </div>
             <div class="tool-group">
                 <button title="Undo (Ctrl+Z)" ?disabled=${!this.canUndo || !editing} @click=${() => this.emit('score-undo')}>↩ Undo</button>
@@ -148,7 +162,9 @@ export class ScoreToolbar extends LitElement {
                         title="Grid the insert / move / resize gestures snap to"
                         @change=${(e: Event) => this.selectGrid(e)}>
                     ${SNAP_GRIDS.map(o => html`
-                        <option value=${o.value} ?selected=${this.activeGrid === o.value}>${o.label}</option>
+                        <option value=${o.value} ?selected=${this.activeGrid === o.value}>
+                            ${this.tripletMode && o.value !== 'auto' ? `${o.label}T` : o.label}
+                        </option>
                     `)}
                 </select>
             </div>
