@@ -126,8 +126,14 @@ public:
 private:
     // Requires m_doc_mutex held. Applies a mutation to a track and refreshes
     // the playback snapshot when the edited document is being played.
+    // What a track edit has to tell the playback engine. Rebuild is the safe
+    // default; MixOnly exists because a fader move changes no note and arrives
+    // once per pixel of the drag.
+    enum class PlaybackSync { Rebuild, MixOnly };
+
     template <typename Fn>
-    base::Result<void> with_track(base::CompositionId doc_id, base::TrackId track_id, Fn&& fn);
+    base::Result<void> with_track(base::CompositionId doc_id, base::TrackId track_id, Fn&& fn,
+                                  PlaybackSync sync = PlaybackSync::Rebuild);
 
     void refresh_playback_if_active(base::CompositionId doc_id, const project::ProjectDocument& doc);
     void on_recorded_note(uint8_t pitch, uint8_t velocity, int64_t start_tick, int64_t duration);

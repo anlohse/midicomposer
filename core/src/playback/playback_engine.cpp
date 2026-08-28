@@ -29,6 +29,12 @@ void PlaybackEngine::shutdown() {
     all_notes_off_locked();
 }
 
+namespace {
+// The two channel-mode controllers the mixer maps onto.
+constexpr uint8_t kControllerVolume = 7;
+constexpr uint8_t kControllerPan    = 10;
+} // namespace
+
 void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
     std::lock_guard lock(m_state_mutex);
 
@@ -56,10 +62,14 @@ void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
     m_programs.clear();
     m_controllers.clear();
     m_bends.clear();
+    for (auto& mix : m_mix) mix.reset();
     for (const auto& track : comp.tracks()) {
         if (track.is_muted()) continue;
         if (any_solo && !track.is_solo()) continue;
         const uint8_t channel = track.midi_channel() & 0x0F;
+        // Two tracks can share a channel, and a channel has one volume: the
+        // last one wins rather than the two fighting over it every refresh.
+        m_mix[channel] = ChannelMix{track.volume(), track.pan()};
         for (const auto& note : track.notes()) {
             m_notes.push_back({channel, note.pitch, note.velocity,
                                note.start.value(), note.end().value()});
@@ -97,6 +107,43 @@ void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
 
 void PlaybackEngine::refresh_snapshot(const project::ProjectDocument& doc) {
     build_snapshot(doc);
+    // Mute and solo change which channels are audible at all, so the mix has to
+    // follow an edit and not wait for the next play. Only the difference goes
+    // out, so an edit that left the mixer alone sends nothing.
+    const auto state = m_state.load();
+    if (state == TransportState::Playing || state == TransportState::Recording) {
+        std::lock_guard lock(m_state_mutex);
+        send_mix_locked(false);
+    }
+}
+
+void PlaybackEngine::set_channel_mix(uint8_t channel, uint8_t volume, uint8_t pan) {
+    channel &= 0x0F;
+    std::lock_guard lock(m_state_mutex);
+    // Only when the channel is already in the snapshot: a muted track is absent
+    // from it, and moving its fader must not make it audible again.
+    if (!m_mix[channel]) return;
+    m_mix[channel] = ChannelMix{volume, pan};
+    const auto state = m_state.load();
+    if (state == TransportState::Playing || state == TransportState::Recording) {
+        send_mix_locked(false);
+    }
+}
+
+std::optional<ChannelMix> PlaybackEngine::channel_mix(uint8_t channel) const {
+    std::lock_guard lock(m_state_mutex);
+    return m_mix[channel & 0x0F];
+}
+
+void PlaybackEngine::send_mix_locked(bool force) {
+    if (!m_midi_service.is_output_open()) return;
+    for (uint8_t ch = 0; ch < 16; ++ch) {
+        if (!m_mix[ch]) continue;
+        if (!force && m_sent_mix[ch] == m_mix[ch]) continue;
+        send_controller(ch, kControllerVolume, m_mix[ch]->volume);
+        send_controller(ch, kControllerPan, m_mix[ch]->pan);
+        m_sent_mix[ch] = m_mix[ch];
+    }
 }
 
 void PlaybackEngine::play(const project::ProjectDocument& doc) {
@@ -439,6 +486,12 @@ void PlaybackEngine::send_effective_state_locked(int64_t tick) {
         if (has_program[ch]) send_program_change(ch, program[ch]);
     }
 
+    // The mixer first, so a CC 7 or CC 10 written into the score below still
+    // wins from its own tick onward: the fader is the channel's starting point,
+    // not an override of the music. Forced, because starting or seeking has to
+    // establish the channel state whatever was last sent.
+    send_mix_locked(true);
+
     // Per (channel, controller) rather than per channel: a track can set volume,
     // pan and modulation independently, and only the latest of each applies.
     std::map<std::pair<uint8_t, uint8_t>, uint8_t> controllers;
@@ -448,6 +501,13 @@ void PlaybackEngine::send_effective_state_locked(int64_t tick) {
     }
     for (const auto& [key, value] : controllers) {
         send_controller(key.first, key.second, value);
+        // The score just overwrote what the mixer put on this channel. Forget
+        // the sent value rather than the wanted one, so the fader's setting
+        // returns the next time it is touched instead of being suppressed as
+        // already-sent.
+        if (key.second == kControllerVolume || key.second == kControllerPan) {
+            m_sent_mix[key.first].reset();
+        }
     }
 
     int16_t bend[16] = {};
