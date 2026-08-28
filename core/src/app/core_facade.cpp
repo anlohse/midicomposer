@@ -440,7 +440,8 @@ std::string CoreFacade::get_project_path(base::CompositionId id) const {
 }
 
 template <typename Fn>
-base::Result<void> CoreFacade::with_track(base::CompositionId doc_id, base::TrackId track_id, Fn&& fn) {
+base::Result<void> CoreFacade::with_track(base::CompositionId doc_id, base::TrackId track_id, Fn&& fn,
+                                          PlaybackSync sync) {
     auto* doc = m_document_manager.get_document(doc_id);
     if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
     auto& tracks = doc->composition().tracks();
@@ -453,19 +454,27 @@ base::Result<void> CoreFacade::with_track(base::CompositionId doc_id, base::Trac
     doc->record_change({project::ChangeKind::TrackPropsUpdated, track_id, base::NoteId{}, {}});
     doc->mark_dirty();
     doc->bump_revision();
-    refresh_playback_if_active(doc_id, *doc);
+    if (sync == PlaybackSync::Rebuild) {
+        refresh_playback_if_active(doc_id, *doc);
+    } else {
+        // Straight to the channel. Safe under m_doc_mutex: the engine takes its
+        // own lock and never calls back into the facade while holding it.
+        m_playback_engine.set_channel_mix(it->midi_channel(), it->volume(), it->pan());
+    }
     publish_changes(doc_id, *doc, base_revision);
     return {};
 }
 
 base::Result<void> CoreFacade::set_track_volume(base::CompositionId doc_id, base::TrackId track_id, uint8_t volume) {
     std::lock_guard lock(m_doc_mutex);
-    return with_track(doc_id, track_id, [volume](auto& t) { t.set_volume(volume); });
+    return with_track(doc_id, track_id, [volume](auto& t) { t.set_volume(volume); },
+                      PlaybackSync::MixOnly);
 }
 
 base::Result<void> CoreFacade::set_track_pan(base::CompositionId doc_id, base::TrackId track_id, uint8_t pan) {
     std::lock_guard lock(m_doc_mutex);
-    return with_track(doc_id, track_id, [pan](auto& t) { t.set_pan(pan); });
+    return with_track(doc_id, track_id, [pan](auto& t) { t.set_pan(pan); },
+                      PlaybackSync::MixOnly);
 }
 
 base::Result<void> CoreFacade::set_track_mute(base::CompositionId doc_id, base::TrackId track_id, bool mute) {

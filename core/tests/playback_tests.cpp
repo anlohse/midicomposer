@@ -185,3 +185,143 @@ TEST_CASE("deleting the last note while playing ends playback") {
     engine.refresh_snapshot(shortened);
     CHECK(wait_for_state(engine, playback::TransportState::Stopped, 3000ms));
 }
+
+// ─── Mixer ───────────────────────────────────────────────────────────────────
+//
+// The engine sends the mixer's volume and pan as CC 7 and CC 10. Tests assert
+// the snapshot it would send from, not the bytes: MidiService talks to a real
+// port, there is no seam to record against, and no port is open here.
+
+namespace {
+
+struct TrackMix {
+    std::uint8_t channel;
+    std::uint8_t volume;
+    std::uint8_t pan;
+    bool muted = false;
+    bool solo  = false;
+};
+
+// One note per track, so nothing is dropped for being empty.
+project::ProjectDocument make_mix_document(const std::vector<TrackMix>& tracks) {
+    music::Composition comp{base::CompositionId{1}};
+    comp.set_ppqn(static_cast<int>(kPpqn));
+    std::uint64_t id = 1;
+    for (const auto& t : tracks) {
+        music::Track track{base::TrackId{id}, "Track"};
+        track.set_midi_channel(t.channel);
+        track.set_volume(t.volume);
+        track.set_pan(t.pan);
+        track.set_muted(t.muted);
+        track.set_solo(t.solo);
+        music::Note n;
+        n.id = base::NoteId{id++};
+        n.start = timeline::Tick{0};
+        n.duration = timeline::TickDuration{kPpqn};
+        n.pitch = 60;
+        n.velocity = 100;
+        track.notes().push_back(n);
+        comp.tracks().push_back(std::move(track));
+    }
+    return project::ProjectDocument{std::move(comp)};
+}
+
+} // namespace
+
+TEST_CASE("a track's fader reaches its channel") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{3, 90, 20}});
+    engine.refresh_snapshot(doc);
+
+    auto mix = engine.channel_mix(3);
+    REQUIRE(mix.has_value());
+    CHECK(mix->volume == 90);
+    CHECK(mix->pan == 20);
+    // Channels no track occupies are left alone rather than defaulted, so
+    // nothing is sent for them.
+    CHECK_FALSE(engine.channel_mix(0).has_value());
+}
+
+TEST_CASE("a muted track leaves its channel with no mix") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{1, 100, 64, /*muted*/ true}});
+    engine.refresh_snapshot(doc);
+
+    // Nothing of a muted track plays, so sending its volume would only pin a
+    // level onto a channel another track may be using.
+    CHECK_FALSE(engine.channel_mix(1).has_value());
+}
+
+TEST_CASE("solo silences the mix of the tracks it excludes") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({
+        {1, 100, 64, false, /*solo*/ true},
+        {2,  80, 10, false, false},
+    });
+    engine.refresh_snapshot(doc);
+
+    CHECK(engine.channel_mix(1).has_value());
+    CHECK_FALSE(engine.channel_mix(2).has_value());
+}
+
+TEST_CASE("two tracks on one channel: the last one wins") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    // A channel has one volume. Without a rule the two would overwrite each
+    // other on every refresh, so the order in the document decides.
+    auto doc = make_mix_document({{5, 40, 0}, {5, 110, 127}});
+    engine.refresh_snapshot(doc);
+
+    auto mix = engine.channel_mix(5);
+    REQUIRE(mix.has_value());
+    CHECK(mix->volume == 110);
+    CHECK(mix->pan == 127);
+}
+
+TEST_CASE("moving a fader updates the channel without a rebuild") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{2, 100, 64}});
+    engine.refresh_snapshot(doc);
+
+    engine.set_channel_mix(2, 55, 100);
+    auto mix = engine.channel_mix(2);
+    REQUIRE(mix.has_value());
+    CHECK(mix->volume == 55);
+    CHECK(mix->pan == 100);
+}
+
+TEST_CASE("a fader on a muted track does not put it back on the channel") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{4, 100, 64, /*muted*/ true}});
+    engine.refresh_snapshot(doc);
+
+    engine.set_channel_mix(4, 120, 0);
+    CHECK_FALSE(engine.channel_mix(4).has_value());
+}
+
+TEST_CASE("the mix survives an edit that has nothing to do with it") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{6, 70, 30}});
+    engine.refresh_snapshot(doc);
+    engine.set_channel_mix(6, 45, 90);
+
+    // A rebuild reads the document again, and the document is where the fader
+    // was written; the engine's copy is not a second source of truth.
+    engine.refresh_snapshot(doc);
+    auto mix = engine.channel_mix(6);
+    REQUIRE(mix.has_value());
+    CHECK(mix->volume == 70);
+}
