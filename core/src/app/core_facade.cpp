@@ -137,7 +137,10 @@ void CoreFacade::initialize() {
 }
 
 std::string CoreFacade::get_version() const {
-    return "0.1.0-alpha";
+    // Comes from project(VERSION) through the build, deliberately with no
+    // fallback: a missing definition has to fail the compile rather than ship a
+    // number that quietly disagrees with the installer and the release tag.
+    return MIDI_COMPOSER_VERSION;
 }
 
 void CoreFacade::exit_application() {
