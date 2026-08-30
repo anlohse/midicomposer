@@ -48,6 +48,8 @@ target_sources(midi_composer_core
         src/device/midi_service.cpp
         src/edit/edit_service.hpp
         src/edit/edit_service.cpp
+        src/playback/internal_synth_output.hpp
+        src/playback/internal_synth_output.cpp
         src/playback/output_plugin.hpp
         src/playback/playback_engine.hpp
         src/playback/playback_engine.cpp
@@ -69,6 +71,8 @@ target_sources(midi_composer_core
         src/project/project_serializer.cpp
         src/io/midi_file.hpp
         src/io/midi_file.cpp
+        src/io/wav_file.hpp
+        src/io/wav_file.cpp
         src/shell/application.hpp
         src/shell/application.cpp
         src/shell/file_dialogs.hpp

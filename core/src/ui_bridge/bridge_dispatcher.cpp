@@ -45,6 +45,8 @@ constexpr const wchar_t* kProjectFilter =
     L"MIDI Composer Project (*.mcproj)\0*.mcproj\0All Files (*.*)\0*.*\0";
 constexpr const wchar_t* kMidiFilter =
     L"MIDI Files (*.mid;*.midi)\0*.mid;*.midi\0All Files (*.*)\0*.*\0";
+constexpr const wchar_t* kAudioFilter =
+    L"WAV Audio (*.wav)\0*.wav\0All Files (*.*)\0*.*\0";
 
 } // namespace
 
@@ -394,6 +396,15 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             nlohmann::json info;
             info["id"] = std::string(out.id());
             info["name"] = std::string(out.name());
+            // The capability query, so the UI knows whether rendering to a file
+            // is something this output could even do.
+            info["producesAudio"] = out.audio() != nullptr;
+            auto available = nlohmann::json::array();
+            for (auto* candidate : m_core.outputs()) {
+                available.push_back({{"id", std::string(candidate->id())},
+                                     {"name", std::string(candidate->name())}});
+            }
+            info["available"] = available;
             auto params = nlohmann::json::array();
             for (const auto& p : out.parameters()) {
                 nlohmann::json jp;
@@ -427,6 +438,20 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             }
             info["parameters"] = params;
             response["result"] = info;
+        } else if (type == "select_output") {
+            auto res = m_core.select_output(payload.at("id").get<std::string>());
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "export_audio") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            std::string path = payload.value("path", std::string{});
+            if (path.empty()) {
+                auto chosen = shell::save_file_dialog(kAudioFilter, L"wav");
+                if (!chosen) { response["result"] = {{"cancelled", true}}; return response; }
+                path = *chosen;
+            }
+            auto res = m_core.export_audio(doc_id, path);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+            else { response["result"] = {{"path", path}}; }
         } else if (type == "set_output_parameter") {
             const auto name = payload.at("name").get<std::string>();
             auto res = m_core.output().set_parameter(name,
