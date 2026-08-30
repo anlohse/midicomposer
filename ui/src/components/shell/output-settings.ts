@@ -29,9 +29,14 @@ export interface OutputParameter {
     filter?: string;
 }
 
+export interface OutputChoice { id: string; name: string }
+
 export interface OutputInfo {
     id: string;
     name: string;
+    /** Whether this output makes sound itself; gates rendering to a file. */
+    producesAudio: boolean;
+    available: OutputChoice[];
     parameters: OutputParameter[];
 }
 
@@ -115,6 +120,19 @@ export class OutputSettings extends LitElement {
         this.info = await loadOutputInfo();
     }
 
+    private async selectOutput(id: string) {
+        this.error = null;
+        try {
+            await CoreBridge.sendCommand('select_output', { id });
+        } catch (err) {
+            this.error = err instanceof Error ? err.message : String(err);
+        }
+        // The new output declares different parameters, so the whole schema is
+        // re-read rather than the values patched.
+        await this.reload();
+        this.dispatchEvent(new CustomEvent('output-changed', { bubbles: true, composed: true }));
+    }
+
     private async setParameter(name: string, value: string | number | boolean) {
         this.error = null;
         try {
@@ -188,7 +206,21 @@ export class OutputSettings extends LitElement {
             <div class="modal-overlay" @click=${() => this.close()}>
                 <div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
                     <h3>Output Settings</h3>
-                    <div class="plugin-name">${this.info?.name ?? 'Loading…'}</div>
+                    ${this.info && this.info.available.length > 1
+                        ? html`
+                            <div class="row">
+                                <label>Output</label>
+                                <div class="control">
+                                    <select @change=${(e: Event) =>
+                                        this.selectOutput((e.target as HTMLSelectElement).value)}>
+                                        ${this.info.available.map(o => html`
+                                            <option value=${o.id} ?selected=${o.id === this.info!.id}>
+                                                ${o.name}
+                                            </option>`)}
+                                    </select>
+                                </div>
+                            </div>`
+                        : html`<div class="plugin-name">${this.info?.name ?? 'Loading…'}</div>`}
 
                     ${this.error ? html`<div class="error">${this.error}</div>` : ''}
 

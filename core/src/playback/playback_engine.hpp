@@ -67,6 +67,11 @@ struct PlaybackBendEvent {
     int16_t value;   // -8192..8191, centre is 0
 };
 
+struct RenderedAudio {
+    int sample_rate{0};
+    std::vector<float> interleaved_stereo;
+};
+
 class PlaybackEngine {
 public:
     using PositionCallback = std::function<void(timeline::Tick)>;
@@ -81,6 +86,10 @@ public:
     // Input and output are separate now: MidiService is the MIDI input the
     // recorder listens to, and where playback goes is the plugin's business.
     PlaybackEngine(device::MidiService& midi_input, OutputPlugin& output);
+
+    /** Point playback at a different output. The caller is responsible for the
+        old one being stopped; the engine only redirects. */
+    void set_output(OutputPlugin& output);
     ~PlaybackEngine();
 
     // Both start the output first and report why they could not, which is what
@@ -91,6 +100,20 @@ public:
     void pause();
     void seek(timeline::Tick tick);
     void shutdown();
+
+    /**
+     * Render the composition to audio, faster than real time and with no audio
+     * device involved.
+     *
+     * The same snapshot and the same slice dispatch the playback thread uses,
+     * driven by a clock that is counted in frames rather than measured: the
+     * result is deterministic, which is what makes it testable at all.
+     *
+     * Fails when the selected output produces no audio -- a MIDI port has
+     * nothing to render -- and when the transport is running, because the
+     * render would take the snapshot out from under it.
+     */
+    [[nodiscard]] base::Result<RenderedAudio> render_offline(const project::ProjectDocument& doc);
 
     // Rebuild the playback snapshot after an edit. Must be called on the
     // thread that owns the document (the bridge/orchestration thread).
@@ -158,7 +181,7 @@ private:
     // channel; otherwise only what differs from what is already on the wire, so
     // an edit during playback does not re-send settings nothing changed.
     // Requires m_state_mutex held.
-    void send_mix_locked(bool force);
+    void send_mix_locked(bool force, int64_t when_us);
 
     // Each carries the instant the event was due; see OutputPlugin. Events
     // scheduled from a slice interpolate it (due_us_locked), everything else --
@@ -175,13 +198,21 @@ private:
     // so what this preserves is the spacing between them -- which is what a
     // chord staying together depends on. Requires m_state_mutex held.
     [[nodiscard]] int64_t due_us_locked(double tick) const;
+
+    // Everything the snapshot schedules in [start_tick, end_tick): note offs,
+    // program changes, controllers, bends, note ons, in the order they have to
+    // reach an output. Shared by the playback thread and the offline renderer,
+    // so a rendered file and what is heard come from one description of what
+    // happens when rather than two that can drift apart.
+    // Requires m_state_mutex held.
+    void dispatch_slice_locked(int64_t start_tick, int64_t end_tick, bool metronome);
     void all_notes_off_locked();  // requires m_state_mutex held
 
     // Sends, per channel, the last program change, controller value and pitch
     // bend at or before `tick`, so starting or seeking into the middle of a
     // composition sounds the way playing up to that point would have.
     // Requires m_state_mutex held.
-    void send_effective_state_locked(int64_t tick);
+    void send_effective_state_locked(int64_t tick, int64_t when_us);
 
     // Push the position / transport state to whoever is listening. Both copy the
     // callback out and invoke it with no engine mutex held, so a listener is
@@ -190,7 +221,9 @@ private:
     void notify_state(TransportState state, timeline::Tick tick);
 
     device::MidiService& m_midi_input;
-    OutputPlugin& m_output;
+    // A pointer rather than a reference: which output is selected changes, and
+    // a reference cannot be reseated.
+    OutputPlugin* m_output;
 
     std::atomic<TransportState> m_state{TransportState::Stopped};
     std::atomic<int64_t> m_current_tick{0};

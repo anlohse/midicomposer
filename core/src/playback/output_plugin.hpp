@@ -84,9 +84,47 @@ using ParameterValue = std::variant<std::monostate, std::string, int, bool>;
  * plugin has one setting, which port, and it is still reached through the
  * bridge commands that were already there.
  */
+/**
+ * The audio side of an output that makes sound itself rather than handing MIDI
+ * to something that does.
+ *
+ * The host pulls: it delivers the events of a block, then asks for the frames
+ * of that block. That is the shape an offline render needs and the shape a
+ * real-time callback needs, so there is one of it rather than two.
+ *
+ * Events arrive before the block they belong to, carrying the instant they were
+ * due, which is what lets an implementation place them at the right frame
+ * instead of at the block boundary.
+ */
+class AudioSource {
+public:
+    virtual ~AudioSource() = default;
+
+    [[nodiscard]] virtual int sample_rate() const = 0;
+
+    /** Start of a render, at `start_us` on the same clock the events carry. */
+    virtual void prepare_render(int64_t start_us) = 0;
+
+    /** Fill `frames` of interleaved stereo, advancing the source's own clock. */
+    virtual void render(float* interleaved, int frames) = 0;
+
+    /** Frames of tail worth rendering after the last event: releases and any
+        echo still have to decay, or a rendered file ends with a click. */
+    [[nodiscard]] virtual int tail_frames() const { return 0; }
+};
+
 class OutputPlugin {
 public:
     virtual ~OutputPlugin() = default;
+
+    /**
+     * The audio this output produces, or null when it produces none.
+     *
+     * This is the capability query: it decides whether the application needs an
+     * audio device at all, and whether rendering to a file is offered. A MIDI
+     * port answers null and always will.
+     */
+    [[nodiscard]] virtual AudioSource* audio() { return nullptr; }
 
     /** Stable across versions, because a project will store it. Not shown. */
     [[nodiscard]] virtual std::string_view id() const = 0;

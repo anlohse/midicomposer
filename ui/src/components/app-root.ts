@@ -13,6 +13,7 @@ import './transport/transport-bar';
 import './score/score-toolbar';
 import './score/score-view';
 import './shell/output-settings';
+import { loadOutputInfo } from './shell/output-settings';
 import './mixer/mixer-panel';
 import './midi-events/midi-events-panel';
 import './shell/status-bar';
@@ -23,6 +24,9 @@ export class AppRoot extends LitElement {
     @state() private showAbout = false;
     @state() private showHelp = false;
     @state() private showOutputSettings = false;
+    /** Whether the selected output can render to a file at all. Asked of the
+        output rather than assumed: a MIDI port never can. */
+    @state() private outputProducesAudio = false;
     @state() private documents: DocumentSnapshot[] = [];
     @state() private activeDocumentId: number | null = null;
     
@@ -337,6 +341,7 @@ export class AppRoot extends LitElement {
 
         try {
             this.version = await CoreBridge.sendCommand<string>('get_version');
+            await this.refreshOutputCapability();
             await this.refreshDocuments();
         } catch (e) {
             console.error('Failed to initialize AppRoot', e);
@@ -449,6 +454,7 @@ export class AppRoot extends LitElement {
             ${this.showHelp ? this.renderHelp() : ''}
             ${this.showOutputSettings
                 ? html`<mc-output-settings
+                        @output-changed=${() => this.refreshOutputCapability()}
                         @close=${() => { this.showOutputSettings = false; }}></mc-output-settings>`
                 : ''}
             ${this.transposeRange ? this.renderTranspose() : ''}
@@ -462,7 +468,13 @@ export class AppRoot extends LitElement {
         return html`
             <div class="menu-root">
                 <div class="menu-item ${open ? 'open' : ''}"
-                     @click=${() => { this.openMenu = open ? null : id; }}>${label}</div>
+                     @click=${() => {
+                         this.openMenu = open ? null : id;
+                         // Asked as the menu opens rather than tracked: the
+                         // output can change from anywhere, and the answer is
+                         // only needed at the moment an item is read.
+                         if (this.openMenu === 'file') void this.refreshOutputCapability();
+                     }}>${label}</div>
                 ${open ? html`
                     <div class="menu-backdrop" @click=${() => { this.openMenu = null; }}></div>
                     <div class="menu-dropdown">${this.renderMenuItems(id)}</div>
@@ -492,6 +504,8 @@ export class AppRoot extends LitElement {
                 ${separator}
                 ${item('Import MIDI…', () => this.handleImportMidi())}
                 ${item('Export MIDI…', () => this.handleExportMidi(), hasDoc)}
+                ${item('Export Audio…', () => this.handleExportAudio(),
+                       hasDoc && this.outputProducesAudio)}
                 ${separator}
                 ${item('Exit', () => this.handleExit())}
             `;
@@ -814,6 +828,24 @@ export class AppRoot extends LitElement {
         } catch (e) {
             console.error('Failed to import MIDI', e);
             alert(`Failed to import MIDI: ${e}`);
+        }
+    }
+
+    /** Asked once at startup and again whenever the output changes, so the menu
+        item reflects what the current output can do. */
+    private async refreshOutputCapability() {
+        const info = await loadOutputInfo();
+        this.outputProducesAudio = info?.producesAudio ?? false;
+    }
+
+    async handleExportAudio() {
+        const doc = this.documents.find(d => d.id === this.activeDocumentId);
+        if (!doc) return;
+        try {
+            // No path: the core opens the save dialog, as the MIDI export does.
+            await CoreBridge.sendCommand('export_audio', { documentId: doc.id });
+        } catch (err) {
+            console.error('Failed to export audio', err);
         }
     }
 

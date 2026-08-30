@@ -3,6 +3,7 @@
 #include "base/json_types.hpp"
 #include "project/project_serializer.hpp"
 #include "io/midi_file.hpp"
+#include "io/wav_file.hpp"
 #include <algorithm>
 #include <filesystem>
 
@@ -108,7 +109,7 @@ const mc::music::Track* find_track_const(const mc::music::Composition& comp, mc:
 
 namespace midi_composer::app {
 
-CoreFacade::CoreFacade() : m_playback_engine(m_midi_service, m_output) {
+CoreFacade::CoreFacade() : m_playback_engine(m_midi_service, m_system_output) {
     MC_LOG_INFO("CoreFacade initialized");
 }
 
@@ -127,7 +128,7 @@ void CoreFacade::initialize() {
     // A fresh install has to make sound with nobody configuring anything, so
     // the output opens a port up front. Which one is the plugin's decision: the
     // facade has no idea what a reasonable default port would be.
-    if (auto result = m_output.open_default_port(); !result) {
+    if (auto result = m_system_output.open_default_port(); !result) {
         MC_LOG_WARN("No MIDI output opened at startup: {}", result.error().message);
     }
 }
@@ -466,6 +467,45 @@ base::Result<void> CoreFacade::set_track_volume(base::CompositionId doc_id, base
     std::lock_guard lock(m_doc_mutex);
     return with_track(doc_id, track_id, [volume](auto& t) { t.set_volume(volume); },
                       PlaybackSync::MixOnly);
+}
+
+std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
+    return {&m_system_output, &m_synth_output};
+}
+
+base::Result<void> CoreFacade::select_output(std::string_view id) {
+    // Not while the transport is running: the switch would leave notes sounding
+    // on an output nothing is going to send their note-offs to.
+    const auto state = m_playback_engine.state();
+    if (state == playback::TransportState::Playing ||
+        state == playback::TransportState::Recording) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidState,
+                                           "Stop playback before changing the output"});
+    }
+
+    for (auto* candidate : outputs()) {
+        if (candidate->id() != id) continue;
+        if (candidate != m_selected_output) {
+            m_selected_output->stop();
+            m_selected_output = candidate;
+            m_playback_engine.set_output(*candidate);
+            MC_LOG_INFO("Output is now {}", std::string(candidate->name()));
+        }
+        return {};
+    }
+    return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                       "No such output: " + std::string(id)});
+}
+
+base::Result<void> CoreFacade::export_audio(base::CompositionId doc_id, const std::string& path) {
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    }
+    auto rendered = m_playback_engine.render_offline(*doc);
+    if (!rendered) return std::unexpected(rendered.error());
+    return io::write_wav(path, rendered->interleaved_stereo, rendered->sample_rate);
 }
 
 base::Result<void> CoreFacade::set_master_volume(base::CompositionId doc_id, uint8_t volume) {
