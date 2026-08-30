@@ -1,6 +1,41 @@
 #include "bridge_dispatcher.hpp"
 #include "base/logger.hpp"
 #include "shell/file_dialogs.hpp"
+#include "playback/output_plugin.hpp"
+
+#include <variant>
+
+namespace {
+
+const char* parameter_type_name(midi_composer::playback::ParameterType type) {
+    using T = midi_composer::playback::ParameterType;
+    switch (type) {
+        case T::Enum:   return "enum";
+        case T::Int:    return "int";
+        case T::Bool:   return "bool";
+        case T::String: return "string";
+        case T::File:   return "file";
+    }
+    return "string";
+}
+
+nlohmann::json parameter_value_to_json(const midi_composer::playback::ParameterValue& value) {
+    // monostate is "not set", which is null rather than an empty string: a
+    // parameter with no value and one set to "" are different things.
+    if (const auto* s = std::get_if<std::string>(&value)) return *s;
+    if (const auto* i = std::get_if<int>(&value)) return *i;
+    if (const auto* b = std::get_if<bool>(&value)) return *b;
+    return nullptr;
+}
+
+midi_composer::playback::ParameterValue parameter_value_from_json(const nlohmann::json& j) {
+    if (j.is_string()) return j.get<std::string>();
+    if (j.is_boolean()) return j.get<bool>();
+    if (j.is_number()) return j.get<int>();
+    return {};
+}
+
+} // namespace
 
 namespace midi_composer::ui_bridge {
 
@@ -350,23 +385,53 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_program(doc_id, track_id, payload.at("program").get<uint8_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
-        } else if (type == "get_midi_output_devices") {
-            // Still the same command and the same shape: ports are the output
-            // plugin's own business now, but nothing above here changed.
-            auto devices = m_core.output().ports();
-            auto arr = nlohmann::json::array();
-            for (const auto& dev : devices) {
-                arr.push_back({{"index", dev.index}, {"name", dev.name}});
+        } else if (type == "get_output_info") {
+            // The selected output, its declared parameters and their current
+            // values, in one round trip. Values come back with the schema
+            // because a plugin may change another parameter's choices, so the
+            // two are never read separately.
+            auto& out = m_core.output();
+            nlohmann::json info;
+            info["id"] = std::string(out.id());
+            info["name"] = std::string(out.name());
+            auto params = nlohmann::json::array();
+            for (const auto& p : out.parameters()) {
+                nlohmann::json jp;
+                jp["name"] = p.name;
+                jp["label"] = p.label;
+                jp["type"] = parameter_type_name(p.type);
+                jp["headline"] = p.headline;
+                jp["value"] = parameter_value_to_json(out.get_parameter(p.name));
+                switch (p.type) {
+                    case playback::ParameterType::Enum: {
+                        auto choices = nlohmann::json::array();
+                        for (const auto& c : p.choices) {
+                            choices.push_back({{"value", c.value}, {"label", c.label}});
+                        }
+                        jp["choices"] = choices;
+                        break;
+                    }
+                    case playback::ParameterType::Int:
+                        jp["min"] = p.min;
+                        jp["max"] = p.max;
+                        jp["step"] = p.step;
+                        jp["unit"] = p.unit;
+                        break;
+                    case playback::ParameterType::File:
+                        jp["filter"] = p.filter;
+                        break;
+                    default:
+                        break;
+                }
+                params.push_back(jp);
             }
-            response["result"] = arr;
-        } else if (type == "open_midi_output") {
-            int index = payload.at("index").get<int>();
-            auto res = m_core.output().open_port(index);
+            info["parameters"] = params;
+            response["result"] = info;
+        } else if (type == "set_output_parameter") {
+            const auto name = payload.at("name").get<std::string>();
+            auto res = m_core.output().set_parameter(name,
+                                                     parameter_value_from_json(payload.at("value")));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
-        } else if (type == "close_midi_output") {
-            m_core.output().close_port();
-        } else if (type == "is_midi_output_open") {
-            response["result"] = m_core.output().is_port_open();
         } else if (type == "get_midi_input_devices") {
             auto devices = m_core.midi_service().get_input_devices();
             auto arr = nlohmann::json::array();

@@ -51,6 +51,13 @@ public:
 
     // ── OutputPlugin ─────────────────────────────────────────────────────────
 
+    // One parameter: which port. Its choices are whatever is plugged in right
+    // now, which is what makes this the case that proves enum choices have to
+    // be re-read rather than declared once.
+    [[nodiscard]] std::vector<Parameter> parameters() const override;
+    [[nodiscard]] ParameterValue get_parameter(std::string_view name) const override;
+    base::Result<void> set_parameter(std::string_view name, const ParameterValue& value) override;
+
     base::Result<void> start() override;
     void stop() override;
 

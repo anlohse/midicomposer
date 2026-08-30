@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { CoreBridge } from '../../bridge/coreBridge';
+import { headlineValue, loadOutputInfo, type OutputInfo } from './output-settings';
 
 @customElement('mc-status-bar')
 export class StatusBar extends LitElement {
@@ -10,10 +11,12 @@ export class StatusBar extends LitElement {
     @property() version = '';
 
     @state() private isNative = false;
-    @state() private midiOutDevice: string | null = null;
+    @state() private output: OutputInfo | null = null;
     @state() private midiInDevice: string | null = null;
 
     static styles = css`
+        .clickable { cursor: pointer; }
+        .clickable:hover { text-decoration: underline; }
         :host {
             display: flex;
             align-items: center;
@@ -56,16 +59,11 @@ export class StatusBar extends LitElement {
         if (!CoreBridge.isNative()) return;
         
         try {
-            // Check Output
-            const isOutOpen = await CoreBridge.sendCommand('is_midi_output_open');
-            if (isOutOpen) {
-                const devices = await CoreBridge.sendCommand('get_midi_output_devices');
-                if (devices && devices.length > 0) {
-                    this.midiOutDevice = devices[0].name;
-                }
-            } else {
-                this.midiOutDevice = null;
-            }
+            // The output reports itself now. What is shown is the value the
+            // plugin marked as its headline — the port actually open, where
+            // this used to show the first device in the list and be wrong
+            // whenever another one had been chosen.
+            this.output = await loadOutputInfo();
 
             // Check Input
             const isInOpen = await CoreBridge.sendCommand('is_midi_input_open');
@@ -84,12 +82,24 @@ export class StatusBar extends LitElement {
         }
     }
 
+    private renderOutput() {
+        if (!this.output) return '';
+        const headline = headlineValue(this.output);
+        return html`
+            <span class="midi-status clickable"
+                  title="Output settings"
+                  @click=${() => this.dispatchEvent(new CustomEvent('open-output-settings',
+                                                    { bubbles: true, composed: true }))}>
+                | OUT: ${headline ?? this.output.name}
+            </span>`;
+    }
+
     render() {
         return html`
             <div class="status-item">
                 <div class="indicator ${this.isNative ? '' : 'mock'}"></div>
                 <span>${this.isNative ? 'NATIVE CORE CONNECTED' : 'MOCK MODE (BROWSER)'}</span>
-                ${this.midiOutDevice ? html`<span class="midi-status">| OUT: ${this.midiOutDevice}</span>` : ''}
+                ${this.renderOutput()}
                 ${this.midiInDevice ? html`<span class="midi-status">| IN: ${this.midiInDevice}</span>` : ''}
             </div>
             <div class="status-item">

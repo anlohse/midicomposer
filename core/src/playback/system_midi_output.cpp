@@ -61,6 +61,19 @@ base::Result<void> SystemMidiOutput::open_port(int index) {
     } catch (const std::exception& e) {
         m_open = false;
         m_port_name.clear();
+        // A failed open can leave the handle holding the device, and winmm then
+        // refuses every later attempt -- the output would be dead for the rest
+        // of the session with nothing to show for it. Throw the handle away and
+        // start from a fresh one.
+        try {
+            if (m_out) m_out->close_port();
+        } catch (...) { /* already unusable; the replacement below is the point */ }
+        try {
+            m_out = std::make_unique<libremidi::midi_out>();
+        } catch (const std::exception& inner) {
+            MC_LOG_ERROR("Could not recreate the MIDI output: {}", inner.what());
+            m_out.reset();
+        }
         return std::unexpected(base::Error{base::ErrorCode::DeviceFailure, e.what()});
     }
 }
@@ -92,6 +105,57 @@ base::Result<void> SystemMidiOutput::open_default_port() {
                                            "No MIDI output devices found"});
     }
     return open_port(available.front().index);
+}
+
+namespace {
+constexpr std::string_view kPortParameter = "port";
+}
+
+std::vector<Parameter> SystemMidiOutput::parameters() const {
+    Parameter port;
+    port.name     = std::string(kPortParameter);
+    port.label    = "Port";
+    port.type     = ParameterType::Enum;
+    port.headline = true;   // the one thing worth showing in the status bar
+    for (const auto& p : ports()) {
+        // Keyed by name, not index: indices shift as devices come and go.
+        port.choices.push_back({p.name, p.name});
+    }
+    return {port};
+}
+
+ParameterValue SystemMidiOutput::get_parameter(std::string_view name) const {
+    if (name != kPortParameter) return {};
+    auto open = open_port_name();
+    if (open.empty()) return {};
+    return open;
+}
+
+base::Result<void> SystemMidiOutput::set_parameter(std::string_view name,
+                                                   const ParameterValue& value) {
+    if (name != kPortParameter) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                           "Unknown parameter: " + std::string(name)});
+    }
+    const auto* wanted = std::get_if<std::string>(&value);
+    if (!wanted) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
+                                           "Port must be a name"});
+    }
+    if (wanted->empty()) {
+        close_port();
+        return {};
+    }
+
+    // Resolved by name every time rather than remembered as an index. Two
+    // identical devices share a name and the first one wins, which is worth
+    // knowing but is still better than an index that silently becomes a
+    // different device.
+    for (const auto& p : ports()) {
+        if (p.name == *wanted) return open_port(p.index);
+    }
+    return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                       "MIDI output port '" + *wanted + "' not found"});
 }
 
 base::Result<void> SystemMidiOutput::start() {
