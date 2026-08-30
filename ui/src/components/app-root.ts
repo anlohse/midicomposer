@@ -12,6 +12,7 @@ import { clampZoom } from './score/score-view';
 import './transport/transport-bar';
 import './score/score-toolbar';
 import './score/score-view';
+import './shell/output-settings';
 import './mixer/mixer-panel';
 import './midi-events/midi-events-panel';
 import './shell/status-bar';
@@ -21,6 +22,7 @@ export class AppRoot extends LitElement {
     @state() private version = '';
     @state() private showAbout = false;
     @state() private showHelp = false;
+    @state() private showOutputSettings = false;
     @state() private documents: DocumentSnapshot[] = [];
     @state() private activeDocumentId: number | null = null;
     
@@ -440,10 +442,15 @@ export class AppRoot extends LitElement {
                 ${activeDoc ? this.renderDocument(activeDoc) : this.renderEmptyState()}
             </main>
             
-            <mc-status-bar .version=${this.version}></mc-status-bar>
+            <mc-status-bar .version=${this.version}
+                    @open-output-settings=${() => { this.showOutputSettings = true; }}></mc-status-bar>
 
             ${this.showAbout ? this.renderAbout() : ''}
             ${this.showHelp ? this.renderHelp() : ''}
+            ${this.showOutputSettings
+                ? html`<mc-output-settings
+                        @close=${() => { this.showOutputSettings = false; }}></mc-output-settings>`
+                : ''}
             ${this.transposeRange ? this.renderTranspose() : ''}
         `;
     }
@@ -480,6 +487,8 @@ export class AppRoot extends LitElement {
                 ${separator}
                 ${item('Save', () => this.handleSave(false), hasDoc, 'Ctrl+S')}
                 ${item('Save As…', () => this.handleSave(true), hasDoc)}
+                ${separator}
+                ${item('Output Settings…', () => { this.showOutputSettings = true; })}
                 ${separator}
                 ${item('Import MIDI…', () => this.handleImportMidi())}
                 ${item('Export MIDI…', () => this.handleExportMidi(), hasDoc)}
