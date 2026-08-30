@@ -18,14 +18,70 @@ constexpr float kReleaseSeconds = 0.120f;
 // Enough headroom for eight voices at once without clipping the sum.
 constexpr float kVoiceGain = 0.11f;
 
+const char* const kWaveformNames[] = {"saw", "square", "triangle", "noise"};
+
 float midi_to_hz(double note) {
     return static_cast<float>(440.0 * std::pow(2.0, (note - 69.0) / 12.0));
 }
 
 } // namespace
 
+// ── The queue ────────────────────────────────────────────────────────────────
+
+bool InternalSynthOutput::EventQueue::push(const Event& e) {
+    std::lock_guard lock(m_producer);
+    const size_t write = m_write.load(std::memory_order_relaxed);
+    const size_t next = (write + 1) % kCapacity;
+    if (next == m_read.load(std::memory_order_acquire)) return false;   // full
+    m_slots[write] = e;
+    m_write.store(next, std::memory_order_release);
+    return true;
+}
+
+bool InternalSynthOutput::EventQueue::pop(Event& out) {
+    const size_t read = m_read.load(std::memory_order_relaxed);
+    if (read == m_write.load(std::memory_order_acquire)) return false;  // empty
+    out = m_slots[read];
+    m_read.store((read + 1) % kCapacity, std::memory_order_release);
+    return true;
+}
+
+void InternalSynthOutput::EventQueue::clear() {
+    std::lock_guard lock(m_producer);
+    // Moving the read index is the consumer's job, so this drops what is
+    // pending by making the queue look empty from the writer's side only when
+    // the reader gets there. Pushing a Reset is the honest way to silence the
+    // voices; this is only for a source that is not being rendered at all.
+    m_read.store(m_write.load(std::memory_order_acquire), std::memory_order_release);
+}
+
+// ── Construction ─────────────────────────────────────────────────────────────
+
 InternalSynthOutput::InternalSynthOutput() {
-    rebuild_wave();
+    // All four built once. Switching waveform is then an index, not a rebuild,
+    // which is what keeps a parameter change from touching memory the audio
+    // thread is reading.
+    for (int w = 0; w < 4; ++w) {
+        auto& wave = m_waves[static_cast<size_t>(w)];
+        wave.assign(kWaveLength, 0.0f);
+        // A fixed seed: a rendered file has to be reproducible, or a test that
+        // compares two renders means nothing.
+        uint32_t noise = 0x1234567u;
+        for (int i = 0; i < kWaveLength; ++i) {
+            const double t = static_cast<double>(i) / kWaveLength;
+            switch (static_cast<Waveform>(w)) {
+                case Waveform::Saw:      wave[i] = static_cast<float>(2.0 * t - 1.0); break;
+                case Waveform::Square:   wave[i] = t < 0.5 ? 1.0f : -1.0f; break;
+                case Waveform::Triangle:
+                    wave[i] = static_cast<float>(t < 0.5 ? (4.0 * t - 1.0) : (3.0 - 4.0 * t));
+                    break;
+                case Waveform::Noise:
+                    noise = noise * 1664525u + 1013904223u;
+                    wave[i] = static_cast<float>((noise >> 8) & 0xFFFF) / 32768.0f - 1.0f;
+                    break;
+            }
+        }
+    }
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -44,14 +100,7 @@ std::vector<Parameter> InternalSynthOutput::parameters() const {
 
 ParameterValue InternalSynthOutput::get_parameter(std::string_view name) const {
     if (name != kWaveformParameter) return {};
-    std::lock_guard lock(m_mutex);
-    switch (m_waveform) {
-        case Waveform::Saw:      return std::string("saw");
-        case Waveform::Square:   return std::string("square");
-        case Waveform::Triangle: return std::string("triangle");
-        case Waveform::Noise:    return std::string("noise");
-    }
-    return {};
+    return std::string(kWaveformNames[m_waveform.load(std::memory_order_relaxed)]);
 }
 
 base::Result<void> InternalSynthOutput::set_parameter(std::string_view name,
@@ -65,71 +114,47 @@ base::Result<void> InternalSynthOutput::set_parameter(std::string_view name,
         return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
                                            "Waveform must be one of the declared choices"});
     }
-
-    std::lock_guard lock(m_mutex);
-    if (*choice == "saw")           m_waveform = Waveform::Saw;
-    else if (*choice == "square")   m_waveform = Waveform::Square;
-    else if (*choice == "triangle") m_waveform = Waveform::Triangle;
-    else if (*choice == "noise")    m_waveform = Waveform::Noise;
-    else {
-        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
-                                           "Unknown waveform: " + *choice});
-    }
-    rebuild_wave();
-    return {};
-}
-
-void InternalSynthOutput::rebuild_wave() {
-    // Generated rather than shipped: no sample data means no question about
-    // where it came from. One cycle, read back at whatever rate a pitch needs.
-    m_wave.assign(kWaveLength, 0.0f);
-    // A fixed seed, because a rendered file has to be reproducible: the same
-    // document must give the same audio, or a golden test means nothing.
-    uint32_t noise = 0x1234567u;
-    for (int i = 0; i < kWaveLength; ++i) {
-        const double t = static_cast<double>(i) / kWaveLength;
-        switch (m_waveform) {
-            case Waveform::Saw:      m_wave[i] = static_cast<float>(2.0 * t - 1.0); break;
-            case Waveform::Square:   m_wave[i] = t < 0.5 ? 1.0f : -1.0f; break;
-            case Waveform::Triangle:
-                m_wave[i] = static_cast<float>(t < 0.5 ? (4.0 * t - 1.0) : (3.0 - 4.0 * t));
-                break;
-            case Waveform::Noise:
-                noise = noise * 1664525u + 1013904223u;
-                m_wave[i] = static_cast<float>((noise >> 8) & 0xFFFF) / 32768.0f - 1.0f;
-                break;
+    for (int i = 0; i < 4; ++i) {
+        if (*choice == kWaveformNames[i]) {
+            // A single atomic store. The audio thread picks it up on its next
+            // frame and reads a table that was already there.
+            m_waveform.store(i, std::memory_order_relaxed);
+            return {};
         }
     }
+    return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
+                                       "Unknown waveform: " + *choice});
 }
 
 // ── OutputPlugin ─────────────────────────────────────────────────────────────
 
 base::Result<void> InternalSynthOutput::start() {
-    std::lock_guard lock(m_mutex);
-    m_pending.clear();
-    for (auto& v : m_voices) v = {};
+    // Through the queue rather than reaching into the voices: a device may
+    // already be pulling, and this is called from a command thread.
+    m_queue.push(Event{Event::Kind::Reset, 0, 0, 0, 0});
     return {};
 }
 
 void InternalSynthOutput::stop() {
-    std::lock_guard lock(m_mutex);
-    m_pending.clear();
-    for (auto& v : m_voices) v = {};
+    m_queue.push(Event{Event::Kind::Reset, 0, 0, 0, 0});
 }
 
 void InternalSynthOutput::note_on(uint8_t ch, uint8_t pitch, uint8_t velocity, int64_t when_us) {
-    std::lock_guard lock(m_mutex);
-    m_pending.push_back({Event::Kind::NoteOn, ch, pitch, velocity, when_us});
+    if (!m_queue.push({Event::Kind::NoteOn, ch, pitch, velocity, when_us})) {
+        m_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void InternalSynthOutput::note_off(uint8_t ch, uint8_t pitch, int64_t when_us) {
-    std::lock_guard lock(m_mutex);
-    m_pending.push_back({Event::Kind::NoteOff, ch, pitch, 0, when_us});
+    if (!m_queue.push({Event::Kind::NoteOff, ch, pitch, 0, when_us})) {
+        m_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void InternalSynthOutput::controller(uint8_t ch, uint8_t cc, uint8_t value, int64_t when_us) {
-    std::lock_guard lock(m_mutex);
-    m_pending.push_back({Event::Kind::Controller, ch, cc, value, when_us});
+    if (!m_queue.push({Event::Kind::Controller, ch, cc, value, when_us})) {
+        m_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void InternalSynthOutput::program_change(uint8_t, uint8_t, int64_t) {
@@ -138,8 +163,9 @@ void InternalSynthOutput::program_change(uint8_t, uint8_t, int64_t) {
 }
 
 void InternalSynthOutput::pitch_bend(uint8_t ch, int16_t value, int64_t when_us) {
-    std::lock_guard lock(m_mutex);
-    m_pending.push_back({Event::Kind::PitchBend, ch, value, 0, when_us});
+    if (!m_queue.push({Event::Kind::PitchBend, ch, value, 0, when_us})) {
+        m_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // ── Voices ───────────────────────────────────────────────────────────────────
@@ -149,6 +175,11 @@ double InternalSynthOutput::rate_for(uint8_t pitch, float bend) const {
     // many wavetable samples to advance per output frame.
     const float hz = midi_to_hz(static_cast<double>(pitch) + bend);
     return static_cast<double>(hz) * kWaveLength / kSampleRate;
+}
+
+void InternalSynthOutput::reset_voices() {
+    for (auto& v : m_voices) v = {};
+    m_active_voices.store(0, std::memory_order_relaxed);
 }
 
 void InternalSynthOutput::start_note(uint8_t channel, uint8_t pitch, uint8_t velocity) {
@@ -188,6 +219,9 @@ void InternalSynthOutput::release_note(uint8_t channel, uint8_t pitch) {
 void InternalSynthOutput::apply(const Event& e) {
     auto& ch = m_channels[e.channel & 0x0F];
     switch (e.kind) {
+        case Event::Kind::Reset:
+            reset_voices();
+            break;
         case Event::Kind::NoteOn:
             if (e.b == 0) release_note(e.channel, static_cast<uint8_t>(e.a));
             else          start_note(e.channel, static_cast<uint8_t>(e.a),
@@ -218,14 +252,15 @@ float InternalSynthOutput::sample_at(double phase) const {
     // Four-point Hermite. The SNES reads its samples through a gaussian kernel,
     // which is a large part of its character; that table is not reproduced here
     // rather than approximated from memory.
-    const int n = static_cast<int>(m_wave.size());
+    const auto& wave = m_waves[static_cast<size_t>(m_waveform.load(std::memory_order_relaxed))];
+    const int n = static_cast<int>(wave.size());
     const double wrapped = phase - std::floor(phase / n) * n;
     const int i1 = static_cast<int>(wrapped);
     const double f = wrapped - i1;
-    const float y0 = m_wave[(i1 - 1 + n) % n];
-    const float y1 = m_wave[i1 % n];
-    const float y2 = m_wave[(i1 + 1) % n];
-    const float y3 = m_wave[(i1 + 2) % n];
+    const float y0 = wave[(i1 - 1 + n) % n];
+    const float y1 = wave[i1 % n];
+    const float y2 = wave[(i1 + 1) % n];
+    const float y3 = wave[(i1 + 2) % n];
 
     const double c0 = y1;
     const double c1 = 0.5 * (y2 - y0);
@@ -236,31 +271,34 @@ float InternalSynthOutput::sample_at(double phase) const {
 
 // ── AudioSource ──────────────────────────────────────────────────────────────
 
-void InternalSynthOutput::prepare_render(int64_t start_us) {
-    std::lock_guard lock(m_mutex);
+void InternalSynthOutput::begin_block(int64_t start_us) {
     m_now_us = start_us;
 }
 
 void InternalSynthOutput::render(float* interleaved, int frames) {
-    std::lock_guard lock(m_mutex);
-
+    // Real time from here down. No locks, no allocation: the queue is popped
+    // without taking anything, the wavetables were built at construction, and
+    // the voices belong to this thread.
     const double us_per_frame = 1'000'000.0 / kSampleRate;
     const float attack  = 1.0f / (kAttackSeconds * kSampleRate);
     const float release = 1.0f / (kReleaseSeconds * kSampleRate);
 
-    // Events carry the instant they were due, so they land on the frame they
-    // belong to rather than at the start of the block. Sorted because the
-    // engine can deliver a note-off for one note after a note-on for another
-    // that starts later in the same slice.
-    std::sort(m_pending.begin(), m_pending.end(),
-              [](const Event& a, const Event& b) { return a.when_us < b.when_us; });
-    size_t next = 0;
-
     for (int i = 0; i < frames; ++i) {
         const int64_t frame_us = m_now_us + static_cast<int64_t>(i * us_per_frame);
-        while (next < m_pending.size() && m_pending[next].when_us <= frame_us) {
-            apply(m_pending[next]);
-            ++next;
+
+        // An event popped but not yet due is held rather than pushed back: the
+        // queue only moves one way, and holding one is enough because events
+        // arrive in the order they were scheduled.
+        while (true) {
+            if (!m_has_held) {
+                if (!m_queue.pop(m_held)) break;
+                m_has_held = true;
+            }
+            // A Reset is not scheduled against the music, so it applies at once
+            // however the clocks happen to line up.
+            if (m_held.kind != Event::Kind::Reset && m_held.when_us > frame_us) break;
+            apply(m_held);
+            m_has_held = false;
         }
 
         float left = 0.0f;
@@ -289,22 +327,14 @@ void InternalSynthOutput::render(float* interleaved, int frames) {
         interleaved[i * 2 + 1] = std::clamp(right, -1.0f, 1.0f);
     }
 
-    // Anything still ahead belongs to a later block; an event that arrived late
-    // is applied rather than dropped, which is why this erases only what was
-    // consumed.
-    m_pending.erase(m_pending.begin(), m_pending.begin() + static_cast<long>(next));
-    m_now_us += static_cast<int64_t>(frames * us_per_frame);
+    int active = 0;
+    for (const auto& v : m_voices) if (v.active) ++active;
+    m_active_voices.store(active, std::memory_order_relaxed);
 }
 
 int InternalSynthOutput::tail_frames() const {
     // Long enough for a release to finish, or a rendered file ends on a click.
     return static_cast<int>(kReleaseSeconds * kSampleRate) + kSampleRate / 10;
-}
-
-int InternalSynthOutput::active_voices() const {
-    std::lock_guard lock(m_mutex);
-    return static_cast<int>(std::count_if(m_voices.begin(), m_voices.end(),
-                                          [](const Voice& v) { return v.active; }));
 }
 
 } // namespace midi_composer::playback

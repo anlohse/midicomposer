@@ -4,6 +4,7 @@
 #include "document_manager.hpp"
 #include "edit/edit_service.hpp"
 #include "playback/playback_engine.hpp"
+#include "device/audio_device.hpp"
 #include "playback/internal_synth_output.hpp"
 #include "playback/system_midi_output.hpp"
 #include <functional>
@@ -125,6 +126,9 @@ public:
     [[nodiscard]] device::MidiService& midi_service() { return m_midi_service; }
     /** The selected output. */
     [[nodiscard]] playback::OutputPlugin& output() { return *m_selected_output; }
+    /** The audio device, open only while an output that makes sound is
+        selected. Exposed so the shell can report what it is doing. */
+    [[nodiscard]] const device::AudioDevice& audio_device() const { return m_audio_device; }
     /** Everything that can be selected, in the order it is offered. */
     [[nodiscard]] std::vector<playback::OutputPlugin*> outputs();
     base::Result<void> select_output(std::string_view id);
@@ -166,6 +170,11 @@ private:
     playback::SystemMidiOutput   m_system_output;
     playback::InternalSynthOutput m_synth_output;
     playback::OutputPlugin*      m_selected_output{&m_system_output};
+    device::AudioDevice          m_audio_device;
+
+    // Opens the device when the selected output makes its own sound, closes it
+    // when it does not.
+    void follow_output_audio();
     DocumentManager m_document_manager;
     edit::EditService m_edit_service;
     playback::PlaybackEngine m_playback_engine;

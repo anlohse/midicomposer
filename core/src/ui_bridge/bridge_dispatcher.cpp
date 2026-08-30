@@ -399,6 +399,12 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             // The capability query, so the UI knows whether rendering to a file
             // is something this output could even do.
             info["producesAudio"] = out.audio() != nullptr;
+            // Whether it is actually being heard, and the evidence that the
+            // callback is running at all.
+            const auto& audio = m_core.audio_device();
+            info["audioDevice"] = {{"running", audio.is_running()},
+                                   {"name", audio.device_name()},
+                                   {"framesRendered", audio.frames_rendered()}};
             auto available = nlohmann::json::array();
             for (auto* candidate : m_core.outputs()) {
                 available.push_back({{"id", std::string(candidate->id())},

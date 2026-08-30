@@ -102,10 +102,25 @@ public:
 
     [[nodiscard]] virtual int sample_rate() const = 0;
 
-    /** Start of a render, at `start_us` on the same clock the events carry. */
-    virtual void prepare_render(int64_t start_us) = 0;
+    /**
+     * Called before every block, with the instant that block begins on the same
+     * clock the events carry.
+     *
+     * Per block rather than once, because the two callers have different clocks
+     * and both are right: an offline render counts frames, so its time is
+     * synthetic and exact; a live device is anchored to the wall clock, so an
+     * event that is already overdue is applied at once rather than waiting for
+     * a counter to catch up to it.
+     */
+    virtual void begin_block(int64_t start_us) = 0;
 
-    /** Fill `frames` of interleaved stereo, advancing the source's own clock. */
+    /**
+     * Fill `frames` of interleaved stereo.
+     *
+     * Called on the audio thread when a device is running: it must not lock,
+     * allocate or block. That constraint is what shapes how events reach an
+     * implementation -- see InternalSynthOutput.
+     */
     virtual void render(float* interleaved, int frames) = 0;
 
     /** Frames of tail worth rendering after the last event: releases and any

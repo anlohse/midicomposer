@@ -44,6 +44,8 @@ target_sources(midi_composer_core
         src/app/core_facade.cpp
         src/app/document_manager.hpp
         src/app/document_manager.cpp
+        src/device/audio_device.hpp
+        src/device/audio_device.cpp
         src/device/midi_service.hpp
         src/device/midi_service.cpp
         src/edit/edit_service.hpp
@@ -97,6 +99,7 @@ target_link_libraries(midi_composer_core
         libremidi::libremidi
     PRIVATE
         miniz
+        miniaudio
 )
 
 if(WIN32)

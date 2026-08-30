@@ -666,7 +666,7 @@ TEST_CASE("a ninth note steals a voice rather than being dropped") {
     REQUIRE(synth.start().has_value());
 
     std::vector<float> block(128 * 2);
-    synth.prepare_render(0);
+    synth.begin_block(0);
     for (int i = 0; i < 12; ++i) {
         synth.note_on(0, static_cast<uint8_t>(60 + i), 100, 0);
     }
@@ -691,4 +691,96 @@ TEST_CASE("a rendered file ends with the tail, not a click") {
     // The release has run out by the end; a hard cut would leave the last
     // samples at whatever amplitude the note was still sounding at.
     CHECK(peak(a, a.size() - 2000, a.size()) < 0.001f);
+}
+
+// ─── The audio thread boundary ───────────────────────────────────────────────
+
+TEST_CASE("events survive the crossing into the render") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(256 * 2);
+
+    // Pushed from this thread, applied inside render — which is what an audio
+    // callback does, without taking a lock to do it.
+    synth.begin_block(0);
+    synth.note_on(0, 60, 100, 0);
+    synth.render(block.data(), 256);
+
+    CHECK(synth.active_voices() == 1);
+    CHECK(synth.dropped_events() == 0);
+}
+
+TEST_CASE("an event due later in the block waits for its frame") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    // 64 frames at 32kHz is 2ms. A note due at 1.5ms belongs in this block but
+    // not at its start.
+    synth.begin_block(0);
+    synth.note_on(0, 60, 100, 1500);
+    synth.render(block.data(), 64);
+    CHECK(synth.active_voices() == 1);
+
+    float early = 0.0f, late = 0.0f;
+    for (int i = 0; i < 24 * 2; ++i) early = std::max(early, std::abs(block[i]));
+    for (int i = 56 * 2; i < 64 * 2; ++i) late = std::max(late, std::abs(block[i]));
+    CHECK(early == 0.0f);
+    CHECK(late > 0.0f);
+}
+
+TEST_CASE("an overdue event is applied at once rather than skipped") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    // Live, events routinely arrive already late: the engine sends when it
+    // notices. Late must mean "now", not "never".
+    synth.begin_block(1'000'000);
+    synth.note_on(0, 60, 100, 5000);
+    synth.render(block.data(), 64);
+
+    CHECK(synth.active_voices() == 1);
+}
+
+TEST_CASE("stopping silences the voices through the same path") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    synth.begin_block(0);
+    synth.note_on(0, 60, 100, 0);
+    synth.render(block.data(), 64);
+    REQUIRE(synth.active_voices() == 1);
+
+    // Not by reaching into the voices from another thread: a reset goes through
+    // the queue like everything else, so a device that is already pulling sees
+    // it in order.
+    synth.stop();
+    synth.begin_block(2000);
+    synth.render(block.data(), 64);
+    CHECK(synth.active_voices() == 0);
+}
+
+TEST_CASE("changing waveform mid-render does not disturb the audio thread") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    synth.begin_block(0);
+    synth.note_on(0, 60, 100, 0);
+    synth.render(block.data(), 64);
+
+    // A single atomic store; the table it selects was built at construction.
+    REQUIRE(synth.set_parameter("waveform", std::string("square")).has_value());
+    synth.begin_block(2000);
+    synth.render(block.data(), 64);
+
+    CHECK(std::get<std::string>(synth.get_parameter("waveform")) == "square");
+    CHECK(synth.active_voices() == 1);
+}
+
+TEST_CASE("a burst larger than the queue is counted, not silently lost") {
+    playback::InternalSynthOutput synth;
+
+    // Nothing is draining it, so this overflows on purpose. Dropping is the
+    // right trade on the audio side — allocating there would be worse — but it
+    // has to be visible.
+    for (int i = 0; i < 4000; ++i) synth.note_on(0, 60, 100, 0);
+    CHECK(synth.dropped_events() > 0);
 }

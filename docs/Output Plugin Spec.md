@@ -197,6 +197,12 @@ A plugin may mark one parameter `headline`. The status bar shows
 `System MIDI — Microsoft GS Wavetable Synth` rather than just the plugin name,
 and the value can be offered inline instead of only behind the dialog.
 
+It shows the name *and* the value. The first draft had the headline replace the
+name, which reads correctly for a port — `Microsoft GS Wavetable Synth` says
+everything — and became nonsense with the second plugin, where it read
+`OUT: Saw`. Designing that against one implementation was the mistake this
+document warns about elsewhere, made here.
+
 This exists to pay back the UX this design costs: today the user picks a port
 directly from a list, and under this model they pick a plugin and then a port
 inside its configuration — one step further away. The headline parameter puts the
@@ -372,9 +378,22 @@ code.
 
    Waveforms are generated in code rather than shipped, so the question of whose
    samples these are does not arise.
-4. **Real-time audio backend** with a lock-free queue, and look-ahead (§3.1) if it
-   proves necessary. Until then the synth can be rendered to a file but not
-   heard live, because nothing pulls its frames outside a render.
+4. **Real-time audio backend** ✅ Done, through miniaudio — a single header, no
+   system dependency, the same reasoning that chose miniz.
+
+   The device is opened when an output that makes sound is selected, not when
+   the transport starts: opening one costs tens of milliseconds and can glitch,
+   and with nothing playing the source renders silence.
+
+   Events cross into the audio thread through a fixed-capacity queue whose
+   consumer takes no lock. Producers serialise among themselves with a mutex,
+   which costs them nothing they cannot afford. A burst that overflows is
+   counted rather than swallowed. Waveforms are all built at construction so
+   changing one is an atomic store rather than a rebuild under the reader.
+
+   Look-ahead is still not implemented. Events arrive up to a loop period late
+   and are applied at the first frame of the block they land in, which is why
+   "overdue means now" is a tested property rather than an accident.
 
 ## 12. Deliberately not doing
 
