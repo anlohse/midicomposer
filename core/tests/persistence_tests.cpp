@@ -16,6 +16,7 @@ music::Composition make_composition() {
     music::Composition comp{base::CompositionId{1}};
     comp.set_title("Fixture");
     comp.set_ppqn(480);
+    comp.set_master_volume(80);
 
     comp.tempo_map().events().clear();
     comp.tempo_map().events().push_back({base::EventId{1}, timeline::Tick{0}, 500000});
@@ -217,4 +218,25 @@ TEST_CASE("MIDI import derives a clef from each track's register") {
 TEST_CASE("importing a file that is not MIDI fails cleanly") {
     CHECK_FALSE(io::MidiFile::import_file(
         (std::filesystem::temp_directory_path() / "mc_does_not_exist.mid").string()));
+}
+
+TEST_CASE("the master fader is saved and read back") {
+    const auto comp = make_composition();
+    const auto json = project::ProjectSerializer::to_json(comp);
+    REQUIRE(json.contains("masterVolume"));
+
+    const auto loaded = project::ProjectSerializer::from_json(json);
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->master_volume() == 80);
+}
+
+TEST_CASE("a project saved before the master fader existed loads at unity") {
+    // Anything written by an earlier build has no masterVolume at all. Defaulting
+    // to 0 would open those projects silent; unity is how they were mixed.
+    auto json = project::ProjectSerializer::to_json(make_composition());
+    json.erase("masterVolume");
+
+    const auto loaded = project::ProjectSerializer::from_json(json);
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->master_volume() == 127);
 }

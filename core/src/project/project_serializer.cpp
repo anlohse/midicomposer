@@ -18,6 +18,7 @@ nlohmann::json ProjectSerializer::to_json(const music::Composition& comp) {
     j["formatVersion"] = kFormatVersion;
     j["title"] = comp.title();
     j["ppqn"] = comp.ppqn();
+    j["masterVolume"] = comp.master_volume();
 
     auto tempo_map = nlohmann::json::array();
     for (const auto& ev : comp.tempo_map().events()) {
@@ -111,6 +112,10 @@ base::Result<music::Composition> ProjectSerializer::from_json(const nlohmann::js
 
         music::Composition comp;
         comp.set_title(j.value("title", std::string{"Untitled"}));
+        // Absent in projects written before there was a master fader: those were
+        // mixed with the track faders alone, so unity is the only reading that
+        // leaves them sounding as they did.
+        comp.set_master_volume(j.value("masterVolume", std::uint8_t{127}));
 
         comp.tempo_map().events().clear();
         for (const auto& e : j.value("tempoMap", nlohmann::json::array())) {
