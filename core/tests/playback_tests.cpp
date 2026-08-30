@@ -536,3 +536,159 @@ TEST_CASE("events of one slice keep their spacing") {
         CHECK(gap < 520'000);
     }
 }
+
+// ─── Offline rendering ───────────────────────────────────────────────────────
+//
+// The second plugin is the one that says whether the interface was designed
+// against one example. It produces audio rather than MIDI, and the render is
+// deterministic — no device, no real-time thread — which is what makes any of
+// this assertable at all.
+
+#include "playback/internal_synth_output.hpp"
+
+namespace {
+
+float peak(const std::vector<float>& audio, size_t from, size_t to) {
+    float p = 0.0f;
+    for (size_t i = from; i < std::min(to, audio.size()); ++i) p = std::max(p, std::abs(audio[i]));
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("a MIDI port has nothing to render") {
+    device::MidiService midi;
+    testing::RecordingOutput out;
+    playback::PlaybackEngine engine{midi, out};
+
+    auto doc = make_document({{0, kPpqn}});
+    const auto rendered = engine.render_offline(doc);
+
+    // The capability query is the whole point: the host asks rather than
+    // assuming every output can do this.
+    REQUIRE_FALSE(rendered.has_value());
+    CHECK(rendered.error().code == base::ErrorCode::InvalidState);
+}
+
+TEST_CASE("rendering a note produces sound where the note is") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    // A quarter note on beat 2 at 120bpm: silence for 500ms, then sound.
+    auto doc = make_document({{kPpqn, kPpqn}});
+    const auto rendered = engine.render_offline(doc);
+    REQUIRE(rendered.has_value());
+    REQUIRE(rendered->sample_rate == 32000);
+
+    const auto& a = rendered->interleaved_stereo;
+    const size_t frames_per_beat = 32000 / 2;          // 500ms at 120bpm
+    const size_t before = frames_per_beat * 2 * 3 / 4; // interleaved, safely inside beat 1
+    const size_t during = frames_per_beat * 2 + 2000;
+
+    CHECK(peak(a, 0, before) == 0.0f);
+    CHECK(peak(a, during, during + 4000) > 0.05f);
+}
+
+TEST_CASE("the same document renders identically twice") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    auto doc = make_document({{0, kPpqn}, {kPpqn, kPpqn}});
+    const auto first = engine.render_offline(doc);
+    const auto second = engine.render_offline(doc);
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+
+    // Determinism is not a nicety here: without it nothing about the audio can
+    // be asserted, now or later.
+    CHECK(first->interleaved_stereo == second->interleaved_stereo);
+}
+
+TEST_CASE("velocity reaches the audio") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    auto quiet = make_document({{0, kPpqn}});
+    quiet.composition().tracks()[0].notes()[0].velocity = 30;
+    auto loud = make_document({{0, kPpqn}});
+    loud.composition().tracks()[0].notes()[0].velocity = 127;
+
+    const auto a = engine.render_offline(quiet);
+    const auto b = engine.render_offline(loud);
+    REQUIRE(a.has_value());
+    REQUIRE(b.has_value());
+    CHECK(peak(b->interleaved_stereo, 0, 20000) > peak(a->interleaved_stereo, 0, 20000) * 2.0f);
+}
+
+TEST_CASE("the mixer's volume reaches the audio too") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    auto doc = make_mix_document({{0, 127, 64}});
+    const auto full = engine.render_offline(doc);
+
+    doc.composition().set_master_volume(32);
+    const auto quiet = engine.render_offline(doc);
+
+    REQUIRE(full.has_value());
+    REQUIRE(quiet.has_value());
+    // CC 7 arrives at the synth the same way it reaches a MIDI port, so the
+    // master fader works on a rendered file without knowing anything about it.
+    CHECK(peak(quiet->interleaved_stereo, 0, 20000)
+          < peak(full->interleaved_stereo, 0, 20000) * 0.6f);
+}
+
+TEST_CASE("pan puts a note on one side") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    auto doc = make_mix_document({{0, 100, 0}});   // hard left
+    const auto rendered = engine.render_offline(doc);
+    REQUIRE(rendered.has_value());
+
+    const auto& a = rendered->interleaved_stereo;
+    float left = 0.0f, right = 0.0f;
+    for (size_t i = 0; i + 1 < std::min<size_t>(a.size(), 40000); i += 2) {
+        left = std::max(left, std::abs(a[i]));
+        right = std::max(right, std::abs(a[i + 1]));
+    }
+    CHECK(left > 0.05f);
+    CHECK(right < left * 0.1f);
+}
+
+TEST_CASE("a ninth note steals a voice rather than being dropped") {
+    playback::InternalSynthOutput synth;
+    REQUIRE(synth.start().has_value());
+
+    std::vector<float> block(128 * 2);
+    synth.prepare_render(0);
+    for (int i = 0; i < 12; ++i) {
+        synth.note_on(0, static_cast<uint8_t>(60 + i), 100, 0);
+    }
+    synth.render(block.data(), 128);
+
+    // Eight is the limit, and it is the point: the ninth takes the oldest
+    // voice instead of being ignored.
+    CHECK(synth.active_voices() == 8);
+}
+
+TEST_CASE("a rendered file ends with the tail, not a click") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    auto doc = make_document({{0, kPpqn}});
+    const auto rendered = engine.render_offline(doc);
+    REQUIRE(rendered.has_value());
+
+    const auto& a = rendered->interleaved_stereo;
+    REQUIRE(a.size() > 2000);
+    // The release has run out by the end; a hard cut would leave the last
+    // samples at whatever amplitude the note was still sounding at.
+    CHECK(peak(a, a.size() - 2000, a.size()) < 0.001f);
+}

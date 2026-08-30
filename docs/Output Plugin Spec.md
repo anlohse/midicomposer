@@ -78,6 +78,18 @@ public:
 };
 ```
 
+### 3.0 The audio capability
+
+An output that makes sound itself rather than handing MIDI to something that
+does also implements `AudioSource`, and answers `audio()` with itself. A MIDI
+port answers null and always will.
+
+The host **pulls**: it delivers the events of a block, then asks for that
+block's frames. That is the shape an offline render needs and the shape a
+real-time callback needs, so there is one of it rather than two. It is also the
+capability query — it decides whether rendering to a file is offered at all,
+and it is what will decide whether the application needs an audio device.
+
 ### 3.1 The timestamp
 
 `when_us` is **the instant the event was due**, in microseconds on a monotonic
@@ -191,6 +203,12 @@ inside its configuration — one step further away. The headline parameter puts 
 part they actually care about back in front of them.
 
 ## 5. A plugin is a type, not a port
+
+Selection arrived with the second plugin rather than being designed against the
+first, which is what stage 2's single-output dialog was deliberately holding
+off for. Switching is refused while the transport runs: the change would leave
+notes sounding on an output nothing is going to send their note-offs to.
+
 
 The host has no concept of a port. A port is an implementation detail of
 `SystemMidiOutput`, surfaced as a dynamic enum parameter.
@@ -338,12 +356,25 @@ code.
 2. **The configuration schema and its generic dialog**, with the port as
    `SystemMidiOutput`'s only parameter — which also exercises dynamic enums, since
    ports come and go.
-3. **A second real plugin.** The S-DSP driven straight from these events,
-   rendered offline to a WAV file. No audio device, no real-time thread, fully
-   deterministic — which makes it testable against golden files, and delivers
-   "export audio" as a side effect.
+3. **A second real plugin.** ✅ Done, with one deliberate change: it ships as
+   *Internal Synth*, not as an SPC-700.
+
+   The voice chain is shaped after the S-DSP — eight voices at 32kHz, playback
+   driven by a pitch *rate*, per-voice left/right levels, an envelope, voice
+   stealing — and it is driven straight from the plugin's events and rendered
+   offline to a WAV. But the chip's character lives in three tables: the
+   gaussian interpolation kernel, the ADSR rate table, and BRR decoding.
+   Reproducing those from memory would mean inventing numbers that look
+   authentic and are not, so Hermite interpolation and a millisecond envelope
+   stand in for the first two, and the third still needs an answer to where a
+   sample bank comes from. **A real SPC-700 plugin is those three things added
+   to this shape**, which is why it is not called one yet.
+
+   Waveforms are generated in code rather than shipped, so the question of whose
+   samples these are does not arise.
 4. **Real-time audio backend** with a lock-free queue, and look-ahead (§3.1) if it
-   proves necessary.
+   proves necessary. Until then the synth can be rendered to a file but not
+   heard live, because nothing pulls its frames outside a render.
 
 ## 12. Deliberately not doing
 

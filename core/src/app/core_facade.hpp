@@ -4,6 +4,7 @@
 #include "document_manager.hpp"
 #include "edit/edit_service.hpp"
 #include "playback/playback_engine.hpp"
+#include "playback/internal_synth_output.hpp"
 #include "playback/system_midi_output.hpp"
 #include <functional>
 #include <mutex>
@@ -122,9 +123,14 @@ public:
 
     [[nodiscard]] playback::PlaybackEngine& playback_engine() { return m_playback_engine; }
     [[nodiscard]] device::MidiService& midi_service() { return m_midi_service; }
-    /** The selected output. One for now; selecting between several is what the
-        configuration schema in the spec is for. */
-    [[nodiscard]] playback::SystemMidiOutput& output() { return m_output; }
+    /** The selected output. */
+    [[nodiscard]] playback::OutputPlugin& output() { return *m_selected_output; }
+    /** Everything that can be selected, in the order it is offered. */
+    [[nodiscard]] std::vector<playback::OutputPlugin*> outputs();
+    base::Result<void> select_output(std::string_view id);
+
+    /** Render the composition to a WAV file through the selected output. */
+    base::Result<void> export_audio(base::CompositionId doc_id, const std::string& path);
 
     void ping();
 
@@ -156,8 +162,10 @@ private:
 
 
     device::MidiService m_midi_service;
-    // Declared before the engine: the engine holds a reference to it.
-    playback::SystemMidiOutput m_output;
+    // Declared before the engine: it is constructed with one of them.
+    playback::SystemMidiOutput   m_system_output;
+    playback::InternalSynthOutput m_synth_output;
+    playback::OutputPlugin*      m_selected_output{&m_system_output};
     DocumentManager m_document_manager;
     edit::EditService m_edit_service;
     playback::PlaybackEngine m_playback_engine;
