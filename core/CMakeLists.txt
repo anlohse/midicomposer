@@ -48,8 +48,11 @@ target_sources(midi_composer_core
         src/device/midi_service.cpp
         src/edit/edit_service.hpp
         src/edit/edit_service.cpp
+        src/playback/output_plugin.hpp
         src/playback/playback_engine.hpp
         src/playback/playback_engine.cpp
+        src/playback/system_midi_output.hpp
+        src/playback/system_midi_output.cpp
         src/music/composition.hpp
         src/music/composition.cpp
         src/music/midi_events.hpp
