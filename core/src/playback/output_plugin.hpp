@@ -4,9 +4,63 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <variant>
+#include <vector>
 
 namespace midi_composer::playback {
+
+// ── Configuration ────────────────────────────────────────────────────────────
+//
+// A plugin declares what it can be configured with; the host renders it. The
+// host never learns what a sample bank is -- it learns that an output has a
+// file parameter, and draws a file picker.
+//
+// There is deliberately no way for a plugin to draw its own dialog. Once that
+// exists it becomes the path of least resistance and the application ends up
+// with two UI toolkits; while it does not, every time a plugin appears to need
+// one it is a signal that this list is missing a type, and adding the type is
+// the correct fix.
+
+enum class ParameterType {
+    Enum,     // one of `choices`
+    Int,      // bounded by min/max/step, labelled with `unit`
+    Bool,
+    String,
+    File,     // a path, narrowed by `filter`
+};
+
+struct EnumChoice {
+    // Stable, and what gets stored. Never an index: unplug a device and every
+    // index shifts, so a remembered choice would silently become a different
+    // one.
+    std::string value;
+    std::string label;   // shown
+};
+
+struct Parameter {
+    std::string   name;                              // stable key
+    std::string   label;                             // shown
+    ParameterType type{ParameterType::String};
+
+    // At most one parameter should set this. The status bar shows it beside the
+    // plugin's name, which is what pays back the step this design adds: the
+    // port used to be picked straight from a list, and is now one dialog away.
+    bool headline{false};
+
+    int         min{0};                              // Int
+    int         max{0};
+    int         step{1};
+    std::string unit;
+
+    std::vector<EnumChoice> choices;                 // Enum
+    std::string             filter;                  // File, e.g. "*.spc"
+};
+
+// std::monostate means "not set". A variant because the plugin is compiled in;
+// across a real ABI boundary this becomes a tagged union.
+using ParameterValue = std::variant<std::monostate, std::string, int, bool>;
 
 /**
  * Where playback sends what it plays.
@@ -38,6 +92,27 @@ public:
     [[nodiscard]] virtual std::string_view id() const = 0;
     /** Shown to the user. */
     [[nodiscard]] virtual std::string_view name() const = 0;
+
+    // ── Configuration. Called from the command thread. ───────────────────────
+    //
+    // Values are re-read after every set, and whenever the dialog opens, so a
+    // parameter may change another's choices freely -- there is no notification
+    // to send. The first plugin already needs that: MIDI ports appear and
+    // disappear as controllers are plugged in.
+    //
+    // Defaulted, because a plugin with nothing to configure should not have to
+    // say so three times.
+
+    [[nodiscard]] virtual std::vector<Parameter> parameters() const { return {}; }
+
+    [[nodiscard]] virtual ParameterValue get_parameter(std::string_view /*name*/) const {
+        return {};
+    }
+
+    virtual base::Result<void> set_parameter(std::string_view name, const ParameterValue&) {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                           "Unknown parameter: " + std::string(name)});
+    }
 
     // ── Lifecycle. Called from the command thread. ───────────────────────────
 
