@@ -436,7 +436,6 @@ base::Result<RenderedAudio> PlaybackEngine::render_offline(const project::Projec
 
     RenderedAudio out;
     out.sample_rate = rate;
-    source->prepare_render(0);
 
     std::vector<float> block(static_cast<size_t>(kBlockFrames) * 2);
 
@@ -471,6 +470,7 @@ base::Result<RenderedAudio> PlaybackEngine::render_offline(const project::Projec
         dispatch_slice_locked(static_cast<int64_t>(tick), static_cast<int64_t>(next),
                               /*metronome*/ false);
 
+        source->begin_block(elapsed_us);
         source->render(block.data(), kBlockFrames);
         out.interleaved_stereo.insert(out.interleaved_stereo.end(), block.begin(), block.end());
 
@@ -484,6 +484,8 @@ base::Result<RenderedAudio> PlaybackEngine::render_offline(const project::Projec
     // file ends on a click.
     const int tail = source->tail_frames();
     for (int rendered = 0; rendered < tail; rendered += kBlockFrames) {
+        elapsed_us += static_cast<int64_t>(block_us);
+        source->begin_block(elapsed_us);
         source->render(block.data(), kBlockFrames);
         out.interleaved_stereo.insert(out.interleaved_stereo.end(), block.begin(), block.end());
     }
