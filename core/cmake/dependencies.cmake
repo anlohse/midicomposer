@@ -51,6 +51,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(miniz)
 
+# miniaudio — the audio device for outputs that make sound themselves. A single
+# header with no system dependency, which is the same reason miniz was chosen:
+# one translation unit defines the implementation (device/audio_device.cpp) and
+# everything else just includes it.
+#
+# Fetched without configuring: SOURCE_SUBDIR points at a directory that has no
+# CMakeLists, so MakeAvailable downloads and stops there. Its own build defines
+# targets and options this project has no use for, and forcing them into the
+# cache would reach every other fetched project too.
+FetchContent_Declare(
+    miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.21
+    SOURCE_SUBDIR does-not-exist
+)
+FetchContent_MakeAvailable(miniaudio)
+
+add_library(miniaudio INTERFACE)
+target_include_directories(miniaudio INTERFACE ${miniaudio_SOURCE_DIR})
+
 # doctest — only fetched when tests are enabled, so a normal build is unaffected.
 if(MIDI_COMPOSER_BUILD_TESTS)
     # 2.4.11 declares cmake_minimum_required(3.0), which CMake 4 refuses.

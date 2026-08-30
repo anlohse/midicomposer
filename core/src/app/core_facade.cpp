@@ -469,6 +469,24 @@ base::Result<void> CoreFacade::set_track_volume(base::CompositionId doc_id, base
                       PlaybackSync::MixOnly);
 }
 
+void CoreFacade::follow_output_audio() {
+    auto* source = m_selected_output->audio();
+    if (!source) {
+        m_audio_device.stop();
+        return;
+    }
+    // Opened on selection rather than on Play. Opening a device costs tens of
+    // milliseconds and can glitch, and there is nothing to gain from paying
+    // that every time the transport starts; with nothing playing the source
+    // renders silence.
+    if (auto opened = m_audio_device.start(*source); !opened) {
+        // Not fatal: the output still renders to a file, it just cannot be
+        // heard live. Saying so beats silence with no explanation.
+        MC_LOG_WARN("Selected output makes sound but no audio device opened: {}",
+                    opened.error().message);
+    }
+}
+
 std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
     return {&m_system_output, &m_synth_output};
 }
@@ -489,6 +507,7 @@ base::Result<void> CoreFacade::select_output(std::string_view id) {
             m_selected_output->stop();
             m_selected_output = candidate;
             m_playback_engine.set_output(*candidate);
+            follow_output_audio();
             MC_LOG_INFO("Output is now {}", std::string(candidate->name()));
         }
         return {};
@@ -503,7 +522,16 @@ base::Result<void> CoreFacade::export_audio(base::CompositionId doc_id, const st
     if (!doc) {
         return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
     }
+    // The device pulls from the same source on its own thread, and a render
+    // calls into it from this one. Close it for the duration rather than let
+    // two threads into the voices at once; a render is faster than real time,
+    // so the silence is brief.
+    const bool was_live = m_audio_device.is_running();
+    if (was_live) m_audio_device.stop();
+
     auto rendered = m_playback_engine.render_offline(*doc);
+
+    if (was_live) follow_output_audio();
     if (!rendered) return std::unexpected(rendered.error());
     return io::write_wav(path, rendered->interleaved_stereo, rendered->sample_rate);
 }

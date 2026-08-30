@@ -3,6 +3,7 @@
 #include "playback/output_plugin.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -69,12 +70,20 @@ public:
     // ── AudioSource ──────────────────────────────────────────────────────────
 
     [[nodiscard]] int sample_rate() const override { return kSampleRate; }
-    void prepare_render(int64_t start_us) override;
+    void begin_block(int64_t start_us) override;
     void render(float* interleaved, int frames) override;
     [[nodiscard]] int tail_frames() const override;
 
     /** Voices sounding right now. For assertions about stealing. */
-    [[nodiscard]] int active_voices() const;
+    [[nodiscard]] int active_voices() const {
+        return m_active_voices.load(std::memory_order_relaxed);
+    }
+
+    /** Events the queue had no room for. Silence with a reason beats silence:
+        if this is ever non-zero the queue is too small for the traffic. */
+    [[nodiscard]] uint64_t dropped_events() const {
+        return m_dropped.load(std::memory_order_relaxed);
+    }
 
 private:
     // The S-DSP's rate, and its polyphony. Eight is a limit worth keeping: it is
@@ -87,12 +96,39 @@ private:
     enum class Waveform { Saw, Square, Triangle, Noise };
 
     struct Event {
-        enum class Kind { NoteOn, NoteOff, Controller, PitchBend };
-        Kind    kind;
-        uint8_t channel;
-        int     a;
-        int     b;
-        int64_t when_us;
+        enum class Kind { NoteOn, NoteOff, Controller, PitchBend, Reset };
+        Kind    kind{Kind::Reset};
+        uint8_t channel{0};
+        int     a{0};
+        int     b{0};
+        int64_t when_us{0};
+    };
+
+    /**
+     * How events cross into the audio thread.
+     *
+     * render() runs on a real-time thread and must not lock, so the consumer
+     * side takes nothing. Producers -- the playback thread sending events, a
+     * command thread starting or stopping -- serialise among themselves with a
+     * mutex, which costs them nothing they cannot afford and keeps the reader
+     * free.
+     *
+     * A fixed capacity means a burst can overflow rather than allocate. That is
+     * the right trade on this side of the boundary, and the drop is counted
+     * rather than swallowed.
+     */
+    class EventQueue {
+    public:
+        bool push(const Event& e);      // any non-audio thread
+        bool pop(Event& out);           // audio thread only
+        void clear();                   // any non-audio thread
+
+    private:
+        static constexpr size_t kCapacity = 2048;   // power of two
+        std::array<Event, kCapacity> m_slots{};
+        std::atomic<size_t> m_write{0};
+        std::atomic<size_t> m_read{0};
+        std::mutex m_producer;
     };
 
     struct Voice {
@@ -114,22 +150,31 @@ private:
     };
 
     void   apply(const Event& e);
+    void   reset_voices();
     void   start_note(uint8_t channel, uint8_t pitch, uint8_t velocity);
     void   release_note(uint8_t channel, uint8_t pitch);
     double rate_for(uint8_t pitch, float bend) const;
     float  sample_at(double phase) const;
-    void   rebuild_wave();
 
-    mutable std::mutex m_mutex;   // events arrive on one thread, render on another
+    EventQueue m_queue;
 
-    std::vector<Event> m_pending;
+    // Touched only by whichever thread is rendering, so they need no
+    // synchronisation of their own.
     std::array<Voice, kVoices>     m_voices{};
     std::array<Channel, kChannels> m_channels{};
-    std::vector<float> m_wave;
-    Waveform m_waveform{Waveform::Saw};
-
+    Event    m_held;              // popped but not yet due
+    bool     m_has_held{false};
     int64_t  m_now_us{0};         // start of the block being rendered
     uint64_t m_age{0};            // monotonic, for voice stealing
+
+    // Every waveform is built once, up front. Switching is then an index rather
+    // than a rebuild, which is what keeps a parameter change off the audio
+    // thread's back.
+    std::array<std::vector<float>, 4> m_waves;
+    std::atomic<int> m_waveform{0};
+
+    std::atomic<int>      m_active_voices{0};
+    std::atomic<uint64_t> m_dropped{0};
 };
 
 } // namespace midi_composer::playback

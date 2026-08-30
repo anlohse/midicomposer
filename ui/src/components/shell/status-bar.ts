@@ -90,7 +90,7 @@ export class StatusBar extends LitElement {
                   title="Output settings"
                   @click=${() => this.dispatchEvent(new CustomEvent('open-output-settings',
                                                     { bubbles: true, composed: true }))}>
-                | OUT: ${headline ?? this.output.name}
+                | OUT: ${this.output.name}${headline ? ` — ${headline}` : ''}
             </span>`;
     }
 
