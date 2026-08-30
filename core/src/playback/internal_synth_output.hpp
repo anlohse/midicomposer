@@ -74,6 +74,9 @@ public:
     void render(float* interleaved, int frames) override;
     [[nodiscard]] int tail_frames() const override;
 
+    /** The waveform a channel would use for its next note. */
+    [[nodiscard]] int channel_waveform(uint8_t channel) const;
+
     /** Voices sounding right now. For assertions about stealing. */
     [[nodiscard]] int active_voices() const {
         return m_active_voices.load(std::memory_order_relaxed);
@@ -96,7 +99,7 @@ private:
     enum class Waveform { Saw, Square, Triangle, Noise };
 
     struct Event {
-        enum class Kind { NoteOn, NoteOff, Controller, PitchBend, Reset };
+        enum class Kind { NoteOn, NoteOff, Controller, ProgramChange, PitchBend, Reset };
         Kind    kind{Kind::Reset};
         uint8_t channel{0};
         int     a{0};
@@ -135,6 +138,9 @@ private:
         bool     active{false};
         uint8_t  channel{0};
         uint8_t  pitch{0};
+        // Captured when the note starts. A program change part way through a
+        // note changes what comes next, not what is already sounding.
+        int      waveform{0};
         double   phase{0.0};      // position in the wavetable
         double   rate{1.0};       // wavetable samples per output frame
         float    level{0.0f};     // velocity
@@ -147,6 +153,11 @@ private:
         float volume{100.0f / 127.0f};
         float pan{0.5f};          // 0 left, 1 right
         float bend{0.0f};         // semitones
+        // Its own timbre. Sixteen channels means sixteen instruments at once,
+        // which is what makes one selected output enough for a whole
+        // composition: the tracks already carry a channel each.
+        int   waveform{0};
+        bool  from_program{false};   // false = following the default parameter
     };
 
     void   apply(const Event& e);
@@ -154,7 +165,8 @@ private:
     void   start_note(uint8_t channel, uint8_t pitch, uint8_t velocity);
     void   release_note(uint8_t channel, uint8_t pitch);
     double rate_for(uint8_t pitch, float bend) const;
-    float  sample_at(double phase) const;
+    float  sample_at(double phase, int waveform) const;
+    [[nodiscard]] int waveform_for(uint8_t channel) const;
 
     EventQueue m_queue;
 

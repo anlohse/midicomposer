@@ -20,6 +20,34 @@ constexpr float kVoiceGain = 0.11f;
 
 const char* const kWaveformNames[] = {"saw", "square", "triangle", "noise"};
 
+// Which waveform a General MIDI program lands on, by family of eight. Four
+// waveforms cannot be 128 instruments, but they can be told apart, and the
+// grouping is what makes a piano track and a brass track sound like different
+// things rather than the same thing twice.
+constexpr int kSaw = 0, kSquare = 1, kTriangle = 2, kNoise = 3;
+constexpr int kFamilyWaveform[16] = {
+    kTriangle,  //   0 Piano
+    kTriangle,  //   8 Chromatic percussion
+    kSquare,    //  16 Organ
+    kSaw,       //  24 Guitar
+    kSquare,    //  32 Bass
+    kSaw,       //  40 Strings
+    kSaw,       //  48 Ensemble
+    kSaw,       //  56 Brass
+    kSquare,    //  64 Reed
+    kTriangle,  //  72 Pipe
+    kSaw,       //  80 Synth lead
+    kTriangle,  //  88 Synth pad
+    kNoise,     //  96 Synth effects
+    kSquare,    // 104 Ethnic
+    kNoise,     // 112 Percussive
+    kNoise,     // 120 Sound effects
+};
+
+// General MIDI reserves channel 10 for percussion, whatever program it carries.
+// The metronome runs there too, so its click stops being a pitched note.
+constexpr uint8_t kPercussionChannel = 9;
+
 float midi_to_hz(double note) {
     return static_cast<float>(440.0 * std::pow(2.0, (note - 69.0) / 12.0));
 }
@@ -89,9 +117,12 @@ InternalSynthOutput::InternalSynthOutput() {
 std::vector<Parameter> InternalSynthOutput::parameters() const {
     Parameter wave;
     wave.name     = std::string(kWaveformParameter);
-    wave.label    = "Waveform";
+    wave.label    = "Default waveform";
     wave.type     = ParameterType::Enum;
     wave.headline = true;
+    // The default only. A track that selects an instrument gets the waveform
+    // its General MIDI family maps to, so four tracks are four timbres without
+    // touching this.
     wave.choices  = {
         {"saw", "Saw"}, {"square", "Square"}, {"triangle", "Triangle"}, {"noise", "Noise"},
     };
@@ -157,9 +188,10 @@ void InternalSynthOutput::controller(uint8_t ch, uint8_t cc, uint8_t value, int6
     }
 }
 
-void InternalSynthOutput::program_change(uint8_t, uint8_t, int64_t) {
-    // Nothing to change instrument to yet. A bank would be what a program
-    // selects from, and there is no bank.
+void InternalSynthOutput::program_change(uint8_t ch, uint8_t program, int64_t when_us) {
+    if (!m_queue.push({Event::Kind::ProgramChange, ch, program, 0, when_us})) {
+        m_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void InternalSynthOutput::pitch_bend(uint8_t ch, int16_t value, int64_t when_us) {
@@ -179,7 +211,24 @@ double InternalSynthOutput::rate_for(uint8_t pitch, float bend) const {
 
 void InternalSynthOutput::reset_voices() {
     for (auto& v : m_voices) v = {};
+    // Channels go back to defaults too. Everything that was set on them --
+    // programs, the mixer, bends -- is re-sent as the transport starts, so
+    // keeping the old values would only let a stale one survive.
+    for (auto& c : m_channels) c = {};
     m_active_voices.store(0, std::memory_order_relaxed);
+}
+
+int InternalSynthOutput::waveform_for(uint8_t channel) const {
+    const auto& ch = m_channels[channel & 0x0F];
+    if ((channel & 0x0F) == kPercussionChannel) return kNoise;
+    // A channel nobody chose an instrument for follows the parameter, so the
+    // setting still means something on a document with no program changes.
+    if (!ch.from_program) return m_waveform.load(std::memory_order_relaxed);
+    return ch.waveform;
+}
+
+int InternalSynthOutput::channel_waveform(uint8_t channel) const {
+    return waveform_for(channel);
 }
 
 void InternalSynthOutput::start_note(uint8_t channel, uint8_t pitch, uint8_t velocity) {
@@ -202,6 +251,7 @@ void InternalSynthOutput::start_note(uint8_t channel, uint8_t pitch, uint8_t vel
     slot->channel   = static_cast<uint8_t>(channel & 0x0F);
     slot->pitch     = pitch;
     slot->rate      = rate_for(pitch, ch.bend);
+    slot->waveform  = waveform_for(channel);
     slot->level     = static_cast<float>(velocity) / 127.0f;
     slot->envelope  = 0.0f;
     slot->releasing = false;
@@ -230,6 +280,10 @@ void InternalSynthOutput::apply(const Event& e) {
         case Event::Kind::NoteOff:
             release_note(e.channel, static_cast<uint8_t>(e.a));
             break;
+        case Event::Kind::ProgramChange:
+            ch.waveform = kFamilyWaveform[(e.a & 0x7F) / 8];
+            ch.from_program = true;
+            break;
         case Event::Kind::Controller:
             // The two the mixer sends. Everything else is accepted and ignored
             // rather than refused: an output is not required to implement all
@@ -248,11 +302,11 @@ void InternalSynthOutput::apply(const Event& e) {
     }
 }
 
-float InternalSynthOutput::sample_at(double phase) const {
+float InternalSynthOutput::sample_at(double phase, int waveform) const {
     // Four-point Hermite. The SNES reads its samples through a gaussian kernel,
     // which is a large part of its character; that table is not reproduced here
     // rather than approximated from memory.
-    const auto& wave = m_waves[static_cast<size_t>(m_waveform.load(std::memory_order_relaxed))];
+    const auto& wave = m_waves[static_cast<size_t>(waveform)];
     const int n = static_cast<int>(wave.size());
     const double wrapped = phase - std::floor(phase / n) * n;
     const int i1 = static_cast<int>(wrapped);
@@ -313,7 +367,7 @@ void InternalSynthOutput::render(float* interleaved, int frames) {
                 v.envelope = std::min(1.0f, v.envelope + attack);
             }
 
-            const float s = sample_at(v.phase) * v.envelope * v.level * kVoiceGain;
+            const float s = sample_at(v.phase, v.waveform) * v.envelope * v.level * kVoiceGain;
             v.phase += v.rate;
 
             const auto& ch = m_channels[v.channel];
