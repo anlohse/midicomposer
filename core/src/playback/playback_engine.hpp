@@ -4,6 +4,7 @@
 #include "timeline/tick.hpp"
 #include "project/project_document.hpp"
 #include "device/midi_service.hpp"
+#include "playback/output_plugin.hpp"
 #include <atomic>
 #include <thread>
 #include <functional>
@@ -77,11 +78,15 @@ public:
     // end of the composition, which no command thread would otherwise report.
     using StateCallback = std::function<void(TransportState, timeline::Tick)>;
 
-    PlaybackEngine(device::MidiService& midi_service);
+    // Input and output are separate now: MidiService is the MIDI input the
+    // recorder listens to, and where playback goes is the plugin's business.
+    PlaybackEngine(device::MidiService& midi_input, OutputPlugin& output);
     ~PlaybackEngine();
 
-    void play(const project::ProjectDocument& doc);
-    void record(const project::ProjectDocument& doc);
+    // Both start the output first and report why they could not, which is what
+    // the user is shown instead of pressing Play and hearing nothing.
+    base::Result<void> play(const project::ProjectDocument& doc);
+    base::Result<void> record(const project::ProjectDocument& doc);
     void stop();
     void pause();
     void seek(timeline::Tick tick);
@@ -155,11 +160,21 @@ private:
     // Requires m_state_mutex held.
     void send_mix_locked(bool force);
 
-    void send_note_on(uint8_t channel, uint8_t pitch, uint8_t velocity);
-    void send_note_off(uint8_t channel, uint8_t pitch);
-    void send_program_change(uint8_t channel, uint8_t program);
-    void send_controller(uint8_t channel, uint8_t controller, uint8_t value);
-    void send_pitch_bend(uint8_t channel, int16_t value);
+    // Each carries the instant the event was due; see OutputPlugin. Events
+    // scheduled from a slice interpolate it (due_us_locked), everything else --
+    // the state restored on a seek, a fader moving, notes silenced on stop --
+    // is genuinely immediate and passes now.
+    void send_note_on(uint8_t channel, uint8_t pitch, uint8_t velocity, int64_t when_us);
+    void send_note_off(uint8_t channel, uint8_t pitch, int64_t when_us);
+    void send_program_change(uint8_t channel, uint8_t program, int64_t when_us);
+    void send_controller(uint8_t channel, uint8_t controller, uint8_t value, int64_t when_us);
+    void send_pitch_bend(uint8_t channel, int16_t value, int64_t when_us);
+
+    // When an event at `tick` was due, interpolated inside the slice the loop is
+    // processing. Every event of one iteration is late by about the same amount,
+    // so what this preserves is the spacing between them -- which is what a
+    // chord staying together depends on. Requires m_state_mutex held.
+    [[nodiscard]] int64_t due_us_locked(double tick) const;
     void all_notes_off_locked();  // requires m_state_mutex held
 
     // Sends, per channel, the last program change, controller value and pitch
@@ -174,7 +189,8 @@ private:
     void notify_position(timeline::Tick tick);
     void notify_state(TransportState state, timeline::Tick tick);
 
-    device::MidiService& m_midi_service;
+    device::MidiService& m_midi_input;
+    OutputPlugin& m_output;
 
     std::atomic<TransportState> m_state{TransportState::Stopped};
     std::atomic<int64_t> m_current_tick{0};
@@ -195,6 +211,19 @@ private:
     int64_t m_last_metronome_tick{-1};
     // End of the last scheduled note, so the thread knows when it has run out.
     int64_t m_content_end_tick{0};
+
+    // Whether the output is expecting events. Replaces asking the device
+    // whether a port is open: what matters now is that start() succeeded, which
+    // a plugin with no port at all can also answer.
+    bool m_output_started{false};
+
+    // The slice the loop is processing: ticks [base, base + tick_span] cover
+    // wall clock [base_us, base_us + span_us]. Written once per iteration and
+    // read by due_us_locked.
+    double  m_slice_base_tick{0.0};
+    double  m_slice_tick_span{0.0};
+    int64_t m_slice_base_us{0};
+    double  m_slice_span_us{0.0};
 
     // Mixer settings per MIDI channel, and what was last transmitted for each.
     // The two are kept apart on purpose: a controller written into the score can

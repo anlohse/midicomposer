@@ -13,6 +13,8 @@ struct MidiDeviceInfo {
     std::string name;
 };
 
+// MIDI input. Output moved to playback::SystemMidiOutput, which is one
+// OutputPlugin among others rather than the only way sound can leave.
 class MidiService {
 public:
     using MessageCallback = std::function<void(const std::vector<unsigned char>&, double)>;
@@ -21,14 +23,9 @@ public:
     ~MidiService();
 
     // Device discovery
-    std::vector<MidiDeviceInfo> get_output_devices();
     std::vector<MidiDeviceInfo> get_input_devices();
-    
-    // Port management
-    base::Result<void> open_output_port(int index);
-    void close_output_port();
-    bool is_output_open() const;
 
+    // Port management
     base::Result<void> open_input_port(int index);
     void close_input_port();
     bool is_input_open() const;
@@ -36,15 +33,9 @@ public:
     // Callbacks
     void set_input_callback(MessageCallback cb);
 
-    // Messaging
-    void send_message(const std::vector<unsigned char>& message);
-    void send_message(const unsigned char* message, size_t size);
-
 private:
-    std::unique_ptr<libremidi::midi_out> m_midi_out;
     std::unique_ptr<libremidi::midi_in> m_midi_in;
-    
-    bool m_output_port_open{false};
+
     bool m_input_port_open{false};
 
     MessageCallback m_input_callback;
