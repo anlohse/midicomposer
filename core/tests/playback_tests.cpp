@@ -784,3 +784,93 @@ TEST_CASE("a burst larger than the queue is counted, not silently lost") {
     for (int i = 0; i < 4000; ++i) synth.note_on(0, 60, 100, 0);
     CHECK(synth.dropped_events() > 0);
 }
+
+// ─── One output, several instruments ─────────────────────────────────────────
+
+TEST_CASE("a program change gives a channel its own timbre") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    // Piano and brass are different families, so they land on different
+    // waveforms: four tracks are four instruments through one output.
+    synth.program_change(0, 0, 0);     // Acoustic Grand Piano
+    synth.program_change(1, 56, 0);    // Trumpet
+    synth.begin_block(0);
+    synth.render(block.data(), 64);
+
+    CHECK(synth.channel_waveform(0) != synth.channel_waveform(1));
+}
+
+TEST_CASE("a channel with no program follows the default parameter") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    REQUIRE(synth.set_parameter("waveform", std::string("square")).has_value());
+    synth.begin_block(0);
+    synth.render(block.data(), 64);
+    const int before = synth.channel_waveform(3);
+
+    REQUIRE(synth.set_parameter("waveform", std::string("triangle")).has_value());
+    CHECK(synth.channel_waveform(3) != before);
+
+    // Once an instrument is chosen the channel stops following it.
+    synth.program_change(3, 0, 0);
+    synth.begin_block(2000);
+    synth.render(block.data(), 64);
+    const int chosen = synth.channel_waveform(3);
+    REQUIRE(synth.set_parameter("waveform", std::string("noise")).has_value());
+    CHECK(synth.channel_waveform(3) == chosen);
+}
+
+TEST_CASE("channel 10 is percussion whatever program it carries") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    synth.program_change(9, 0, 0);     // a piano program on the drum channel
+    synth.begin_block(0);
+    synth.render(block.data(), 64);
+
+    // General MIDI reserves it, and the metronome runs there: its click stops
+    // being a pitched note.
+    CHECK(synth.channel_waveform(9) == synth.channel_waveform(9));
+    CHECK(synth.channel_waveform(9) != synth.channel_waveform(0));
+}
+
+TEST_CASE("a note keeps the timbre it started with") {
+    playback::InternalSynthOutput synth;
+    std::vector<float> block(64 * 2);
+
+    synth.program_change(0, 0, 0);     // piano
+    synth.begin_block(0);
+    synth.note_on(0, 60, 100, 0);
+    synth.render(block.data(), 64);
+
+    // Changing instrument part way through decides what comes next, not what is
+    // already sounding.
+    synth.program_change(0, 56, 0);    // trumpet
+    synth.begin_block(2000);
+    synth.render(block.data(), 64);
+    CHECK(synth.active_voices() == 1);
+}
+
+TEST_CASE("two tracks with different instruments render differently") {
+    device::MidiService midi;
+    playback::InternalSynthOutput synth;
+    playback::PlaybackEngine engine{midi, synth};
+
+    auto same = make_mix_document({{0, 100, 64}});
+    same.composition().tracks()[0].program_changes().push_back(
+        {base::EventId{50}, timeline::Tick{0}, 0});           // piano
+    const auto a = engine.render_offline(same);
+
+    auto other = make_mix_document({{0, 100, 64}});
+    other.composition().tracks()[0].program_changes().push_back(
+        {base::EventId{50}, timeline::Tick{0}, 56});          // trumpet
+    const auto b = engine.render_offline(other);
+
+    REQUIRE(a.has_value());
+    REQUIRE(b.has_value());
+    // The program change already crossed the bridge, the document and the
+    // engine before this change; it was the synth that threw it away.
+    CHECK(a->interleaved_stereo != b->interleaved_stereo);
+}
