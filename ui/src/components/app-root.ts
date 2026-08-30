@@ -440,7 +440,7 @@ export class AppRoot extends LitElement {
                 ${activeDoc ? this.renderDocument(activeDoc) : this.renderEmptyState()}
             </main>
             
-            <mc-status-bar></mc-status-bar>
+            <mc-status-bar .version=${this.version}></mc-status-bar>
 
             ${this.showAbout ? this.renderAbout() : ''}
             ${this.showHelp ? this.renderHelp() : ''}
