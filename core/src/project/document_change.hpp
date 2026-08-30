@@ -18,6 +18,7 @@ enum class ChangeKind {
     NoteUpdated,
     NoteDeleted,
     TrackPropsUpdated,       // name, channel, volume, pan, mute, solo, arm
+    MasterVolumeUpdated,     // the master fader, which belongs to no track
     TrackProgramsUpdated,    // the track's program-change list
     // Whole-list replacements, like the programs above. These lists are small
     // and an edit can reorder them, so shipping the list costs less than

@@ -99,9 +99,17 @@ public:
     // playback loop is contending with.
     void set_channel_mix(uint8_t channel, uint8_t volume, uint8_t pan);
 
+    // The master fader, scaling every channel's volume. Same reasoning as
+    // set_channel_mix: it moves per pixel and changes no note.
+    void set_master_volume(uint8_t volume);
+
     // What the snapshot holds for a channel, or nullopt when no audible track
     // occupies it. For assertions; the engine itself reads the members.
     [[nodiscard]] std::optional<ChannelMix> channel_mix(uint8_t channel) const;
+
+    // The volume actually put on the wire for a channel: its fader scaled by the
+    // master. What channel_mix reports is the track's own setting, before that.
+    [[nodiscard]] std::optional<uint8_t> effective_volume(uint8_t channel) const;
 
     [[nodiscard]] TransportState state() const { return m_state; }
     [[nodiscard]] timeline::Tick current_tick() const { return timeline::Tick{m_current_tick.load()}; }
@@ -194,7 +202,11 @@ private:
     // actually sent is what stops the next unrelated edit from silently undoing
     // that.
     std::optional<ChannelMix> m_mix[16];
+    // Holds what was sent, which is the scaled value, not the fader's: the
+    // master moving changes what belongs on the wire without any track fader
+    // moving, and comparing the unscaled values would suppress exactly that.
     std::optional<ChannelMix> m_sent_mix[16];
+    uint8_t m_master_volume{127};
 
     struct PlayingNote {
         uint8_t channel;

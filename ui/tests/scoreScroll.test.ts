@@ -15,7 +15,7 @@ function note(startTick: number, durationTicks: number): NoteSnapshot {
 function doc(notes: NoteSnapshot[][], meter = [{ tick: 0, numerator: 4, denominator: 4 }]):
         DocumentSnapshot {
     return {
-        id: 1, title: 't', ppqn: PPQN, revision: 1, dirty: false, filePath: '',
+        id: 1, title: 't', ppqn: PPQN, masterVolume: 127, revision: 1, dirty: false, filePath: '',
         canUndo: false, canRedo: false,
         tracks: notes.map((ns, i) => ({
             id: String(i + 1), name: 'T', midiChannel: 0, clef: 'treble',

@@ -74,6 +74,7 @@ public:
 
     // Track parameters
     base::Result<void> set_track_volume(base::CompositionId doc_id, base::TrackId track_id, uint8_t volume);
+    base::Result<void> set_master_volume(base::CompositionId doc_id, uint8_t volume);
     base::Result<void> set_track_pan(base::CompositionId doc_id, base::TrackId track_id, uint8_t pan);
     base::Result<void> set_track_mute(base::CompositionId doc_id, base::TrackId track_id, bool mute);
     base::Result<void> set_track_solo(base::CompositionId doc_id, base::TrackId track_id, bool solo);

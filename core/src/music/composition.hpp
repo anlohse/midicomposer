@@ -24,6 +24,12 @@ public:
     [[nodiscard]] std::uint16_t ppqn() const noexcept { return ppqn_; }
     void set_ppqn(std::uint16_t ppqn) noexcept { if (ppqn > 0) ppqn_ = ppqn; }
 
+    // Scales every track's volume on the way to its channel. MIDI has no master
+    // level of its own, so it is a property of the composition rather than of
+    // the device, and it is saved with the project like the track faders are.
+    [[nodiscard]] std::uint8_t master_volume() const noexcept { return master_volume_; }
+    void set_master_volume(std::uint8_t volume) noexcept { master_volume_ = volume > 127 ? 127 : volume; }
+
     [[nodiscard]] const TrackContainer& tracks() const noexcept { return tracks_; }
     [[nodiscard]] TrackContainer& tracks() noexcept { return tracks_; }
 
@@ -40,6 +46,7 @@ private:
     base::CompositionId id_{};
     std::string title_{"Untitled"};
     std::uint16_t ppqn_{480};
+    std::uint8_t master_volume_{127};   // unity: track faders reach the channel as written
     TrackContainer tracks_;
     TempoMap tempo_map_;
     TimeSignatureMap time_signature_map_;

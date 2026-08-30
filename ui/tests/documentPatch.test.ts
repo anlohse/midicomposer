@@ -5,7 +5,7 @@ import { DocumentSnapshot } from '../src/models/document';
 
 function mirror(revision = 5): DocumentSnapshot {
     return {
-        id: 1, title: 'test', ppqn: 480, revision, dirty: false,
+        id: 1, title: 'test', ppqn: 480, masterVolume: 127, revision, dirty: false,
         filePath: '', canUndo: false, canRedo: false,
         tempoMap: [{ tick: 0, bpm: 120 }],
         timeSignatureMap: [{ tick: 0, numerator: 4, denominator: 4 }],
@@ -189,4 +189,26 @@ test('an unknown track in a controller patch forces a resync', () => {
         kind: 'trackControllersUpdated', trackId: 999, controllerEvents: [],
     }]));
     assert.equal(next, null);
+});
+
+test('a master volume change patches without touching the tracks', () => {
+    const before = mirror();
+    const next = applyDocumentPatch(before, patch([
+        { kind: 'masterVolumeUpdated', masterVolume: 64 },
+    ]));
+    assert.ok(next);
+    assert.equal(next!.masterVolume, 64);
+    // The master belongs to no track, so nothing about them may move — the
+    // track faders in particular keep their own values.
+    assert.deepEqual(next!.tracks, before.tracks);
+});
+
+test('a master volume change does not force a resync', () => {
+    // It arrives once per pixel of a drag; falling back to a full re-snapshot
+    // would fetch the whole document that often.
+    const next = applyDocumentPatch(mirror(), patch([
+        { kind: 'masterVolumeUpdated', masterVolume: 0 },
+    ]));
+    assert.ok(next);
+    assert.equal(next!.masterVolume, 0);
 });

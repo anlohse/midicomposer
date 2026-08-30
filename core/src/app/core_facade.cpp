@@ -186,6 +186,7 @@ nlohmann::json CoreFacade::get_document_snapshot(base::CompositionId id) const {
     snapshot["id"] = doc->composition().id().value();
     snapshot["title"] = doc->composition().title();
     snapshot["ppqn"] = doc->composition().ppqn();
+    snapshot["masterVolume"] = doc->composition().master_volume();
     snapshot["revision"] = doc->revision();
     snapshot["dirty"] = doc->dirty();
     snapshot["filePath"] = doc->file_path();
@@ -471,6 +472,24 @@ base::Result<void> CoreFacade::set_track_volume(base::CompositionId doc_id, base
                       PlaybackSync::MixOnly);
 }
 
+base::Result<void> CoreFacade::set_master_volume(base::CompositionId doc_id, uint8_t volume) {
+    std::lock_guard lock(m_doc_mutex);
+    auto* doc = m_document_manager.get_document(doc_id);
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    const uint64_t base_revision = doc->revision();
+
+    doc->composition().set_master_volume(volume);
+    // Belongs to no track, so it carries no track id.
+    doc->record_change({project::ChangeKind::MasterVolumeUpdated, base::TrackId{}, base::NoteId{}, {}});
+    doc->mark_dirty();
+    doc->bump_revision();
+    // Straight to the engine for the same reason the track faders are: it
+    // changes no note, and it arrives once per pixel of a drag.
+    m_playback_engine.set_master_volume(volume);
+    publish_changes(doc_id, *doc, base_revision);
+    return {};
+}
+
 base::Result<void> CoreFacade::set_track_pan(base::CompositionId doc_id, base::TrackId track_id, uint8_t pan) {
     std::lock_guard lock(m_doc_mutex);
     return with_track(doc_id, track_id, [pan](auto& t) { t.set_pan(pan); },
@@ -727,6 +746,11 @@ nlohmann::json CoreFacade::build_patch(base::CompositionId doc_id, project::Proj
                 item["trackId"] = change.track_id.value();
                 item["noteId"] = change.note_id.value();
                 break;
+            case project::ChangeKind::MasterVolumeUpdated:
+                item["kind"] = "masterVolumeUpdated";
+                item["masterVolume"] = comp.master_volume();
+                break;
+
             case project::ChangeKind::TrackPropsUpdated: {
                 const auto* track = find_track_const(comp, change.track_id);
                 if (!track) { resync = true; continue; }

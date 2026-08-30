@@ -33,6 +33,14 @@ namespace {
 // The two channel-mode controllers the mixer maps onto.
 constexpr uint8_t kControllerVolume = 7;
 constexpr uint8_t kControllerPan    = 10;
+
+// MIDI has no master volume, so the master fader is applied here, to each
+// channel's volume on its way out. Rounded rather than truncated so a master
+// just below unity does not quietly drop every channel a step.
+uint8_t scale_by_master(uint8_t volume, uint8_t master) {
+    if (master >= 127) return volume;   // unity: leave the fader's own value alone
+    return static_cast<uint8_t>((static_cast<int>(volume) * master + 63) / 127);
+}
 } // namespace
 
 void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
@@ -40,6 +48,7 @@ void PlaybackEngine::build_snapshot(const project::ProjectDocument& doc) {
 
     const auto& comp = doc.composition();
     m_ppqn = comp.ppqn();
+    m_master_volume = comp.master_volume();
 
     m_tempo.clear();
     for (const auto& ev : comp.tempo_map().events()) {
@@ -135,14 +144,34 @@ std::optional<ChannelMix> PlaybackEngine::channel_mix(uint8_t channel) const {
     return m_mix[channel & 0x0F];
 }
 
+void PlaybackEngine::set_master_volume(uint8_t volume) {
+    std::lock_guard lock(m_state_mutex);
+    m_master_volume = volume > 127 ? 127 : volume;
+    const auto state = m_state.load();
+    if (state == TransportState::Playing || state == TransportState::Recording) {
+        send_mix_locked(false);
+    }
+}
+
+std::optional<uint8_t> PlaybackEngine::effective_volume(uint8_t channel) const {
+    std::lock_guard lock(m_state_mutex);
+    const auto& mix = m_mix[channel & 0x0F];
+    if (!mix) return std::nullopt;
+    return scale_by_master(mix->volume, m_master_volume);
+}
+
 void PlaybackEngine::send_mix_locked(bool force) {
     if (!m_midi_service.is_output_open()) return;
     for (uint8_t ch = 0; ch < 16; ++ch) {
         if (!m_mix[ch]) continue;
-        if (!force && m_sent_mix[ch] == m_mix[ch]) continue;
-        send_controller(ch, kControllerVolume, m_mix[ch]->volume);
-        send_controller(ch, kControllerPan, m_mix[ch]->pan);
-        m_sent_mix[ch] = m_mix[ch];
+        // Pan is left alone: the master is a level, and scaling a position
+        // would drag every channel towards the left as it came down.
+        const ChannelMix wire{scale_by_master(m_mix[ch]->volume, m_master_volume),
+                              m_mix[ch]->pan};
+        if (!force && m_sent_mix[ch] == wire) continue;
+        send_controller(ch, kControllerVolume, wire.volume);
+        send_controller(ch, kControllerPan, wire.pan);
+        m_sent_mix[ch] = wire;
     }
 }
 

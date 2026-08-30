@@ -325,3 +325,69 @@ TEST_CASE("the mix survives an edit that has nothing to do with it") {
     REQUIRE(mix.has_value());
     CHECK(mix->volume == 70);
 }
+
+TEST_CASE("the master scales every channel's volume") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{0, 100, 64}, {1, 60, 64}});
+    doc.composition().set_master_volume(64);
+    engine.refresh_snapshot(doc);
+
+    // The faders themselves are untouched: the master is applied on the way out,
+    // so pulling it down and back up returns each track to where it was set.
+    CHECK(engine.channel_mix(0)->volume == 100);
+    CHECK(engine.channel_mix(1)->volume == 60);
+    CHECK(engine.effective_volume(0) == 50);   // 100 * 64/127, rounded
+    CHECK(engine.effective_volume(1) == 30);
+}
+
+TEST_CASE("a master at full scale changes nothing") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{0, 77, 64}});
+    doc.composition().set_master_volume(127);
+    engine.refresh_snapshot(doc);
+
+    // Unity has to be exact, not merely close: rounding here would move every
+    // track's level the moment a master fader existed at all.
+    CHECK(engine.effective_volume(0) == 77);
+}
+
+TEST_CASE("a master at zero silences every channel") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{0, 127, 64}, {4, 100, 64}});
+    doc.composition().set_master_volume(0);
+    engine.refresh_snapshot(doc);
+
+    CHECK(engine.effective_volume(0) == 0);
+    CHECK(engine.effective_volume(4) == 0);
+}
+
+TEST_CASE("moving the master moves the channels without a rebuild") {
+    device::MidiService midi;
+    playback::PlaybackEngine engine{midi};
+
+    auto doc = make_mix_document({{2, 120, 64}});
+    engine.refresh_snapshot(doc);
+    CHECK(engine.effective_volume(2) == 120);
+
+    engine.set_master_volume(32);
+    CHECK(engine.effective_volume(2) == 30);   // 120 * 32/127, rounded
+    CHECK(engine.channel_mix(2)->volume == 120);
+}
+
+TEST_CASE("the master defaults to unity and is saved with the project") {
+    music::Composition comp{base::CompositionId{1}};
+    CHECK(comp.master_volume() == 127);
+
+    comp.set_master_volume(80);
+    CHECK(comp.master_volume() == 80);
+
+    // Out of range is clamped rather than wrapping to near-silence.
+    comp.set_master_volume(200);
+    CHECK(comp.master_volume() == 127);
+}

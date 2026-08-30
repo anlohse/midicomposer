@@ -10,6 +10,7 @@ export type DocumentChange =
     | { kind: 'noteCreated';           trackId: number; note: NoteSnapshot }
     | { kind: 'noteUpdated';           trackId: number; note: NoteSnapshot }
     | { kind: 'noteDeleted';           trackId: number; noteId: number }
+    | { kind: 'masterVolumeUpdated';   masterVolume: number }
     | { kind: 'trackPropsUpdated';     track: TrackPropsPatch }
     | { kind: 'trackProgramsUpdated';  trackId: number; programChanges: ProgramChangeEventSnapshot[] }
     // Whole-list replacements: an edit can move an event in tick order, and these
@@ -68,6 +69,9 @@ function insertSorted(notes: NoteSnapshot[], note: NoteSnapshot): NoteSnapshot[]
  */
 function applyChange(doc: DocumentSnapshot, change: DocumentChange): DocumentSnapshot | null {
     switch (change.kind) {
+        case 'masterVolumeUpdated':
+            return { ...doc, masterVolume: change.masterVolume };
+
         case 'noteCreated':
             return replaceTrack(doc, change.trackId, t => ({
                 ...t, notes: insertSorted(t.notes.filter(n => !sameId(n.id, change.note.id)), change.note),

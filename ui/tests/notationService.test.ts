@@ -16,7 +16,7 @@ interface Options {
 /** Minimal single-track document; only the fields the notation service reads. */
 function doc(notes: Array<[number, number, number]>, opts: Options = {}): DocumentSnapshot {
     return {
-        id: 1, title: 'test', ppqn: opts.ppqn ?? PPQN, revision: 0, dirty: false,
+        id: 1, title: 'test', ppqn: opts.ppqn ?? PPQN, masterVolume: 127, revision: 0, dirty: false,
         filePath: '', canUndo: false, canRedo: false,
         tempoMap: [{ tick: 0, bpm: 120 }],
         timeSignatureMap: opts.timeSignatureMap ?? [{ tick: 0, numerator: 4, denominator: 4 }],

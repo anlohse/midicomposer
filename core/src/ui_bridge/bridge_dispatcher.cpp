@@ -298,6 +298,10 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_volume(doc_id, track_id, checked_u8(payload, "volume", 0, 127));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "set_master_volume") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            auto res = m_core.set_master_volume(doc_id, checked_u8(payload, "volume", 0, 127));
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_pan") {
             base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};

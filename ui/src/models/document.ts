@@ -65,6 +65,8 @@ export interface DocumentSnapshot {
     id: number;
     title: string;
     ppqn: number;
+    /** Master fader, 0-127. Scales every track's volume on its way to MIDI. */
+    masterVolume: number;
     revision: number;
     dirty: boolean;
     filePath: string;
