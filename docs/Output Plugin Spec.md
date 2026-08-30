@@ -220,11 +220,12 @@ The host has no concept of a port. A port is an implementation detail of
 `SystemMidiOutput`, surfaced as a dynamic enum parameter.
 
 One plugin is selected at a time and holds one configuration. Two tracks pointing
-at two different ports is therefore **not possible**, and that is an accepted
+at two different ports is therefore **not possible**, and that was an accepted
 consequence: tracks already separate by MIDI channel, and there are sixteen of
-them on one port. Per-track routing would mean revisiting this — configuration
-would have to move from the type to an instance — and that is the day to do it,
-not now.
+them on one port.
+
+That day has arrived — see §9a. What reopened it was not the routing itself but
+CLAP, whose instruments are one per track.
 
 ## 6. Persistence
 
@@ -317,6 +318,117 @@ Not an internal-only refactor. The first slice touches:
 - **UI.** The output picker becomes plugin selection plus a generic
   schema-rendered configuration dialog. The status bar shows the plugin name and
   its headline parameter.
+
+## 9a. Per-track routing
+
+Status: **designed, not implemented.** This is §5's deferred decision, reopened
+because two things arrived that need it.
+
+### 9a.1 Why now
+
+**CLAP instruments are one per track.** The convention is a mono-timbral plugin
+instance per track, not one instance answering sixteen channels. Hosting CLAP at
+all therefore means a track can name its own output.
+
+**And a project mixes kinds.** A composer wants the bass on a hardware synth
+over MIDI and the lead on a plugin, in the same piece. One selected output
+cannot express that.
+
+Per-track routing subsumes what exists today: a global output is every track
+pointing at the same one.
+
+### 9a.2 The mixer is where this gets uncomfortable
+
+A track routed to an audio plugin can be mixed by the host: its frames are
+right there, so the fader is a gain and the pan is a real pan.
+
+A track routed to a system MIDI port cannot. The sound is being made on the
+other side of a cable, and the only thing the host can do is **ask** — CC 7 for
+volume, CC 10 for pan — and hope the device honours it. Most do. It is still a
+request, not attenuation.
+
+So there are two mixing domains behind one row of faders, and pretending
+otherwise would be the dishonest option:
+
+| | Audio output | MIDI port |
+|---|---|---|
+| Volume | Gain on the frames | CC 7, a request |
+| Pan | Constant-power pan on the frames | CC 10, a request |
+| Master | Gain on the sum | Scales the CC 7s, as today |
+| Mute / solo | Notes are not scheduled | Notes are not scheduled |
+
+Mute and solo are the same in both, because they work by not scheduling the
+notes at all rather than by silencing anything. That part needs no thought.
+
+The master is the one that reads worst: pulled to zero it genuinely silences
+audio tracks and *asks* MIDI devices to go quiet. Every DAW has this asymmetry
+with external gear and nobody is surprised by it — but only because the strip
+says which kind it is. **A channel strip has to show what it is driving**, or the
+fader silently means two different things.
+
+### 9a.3 The fader stops being CC 7 for audio outputs
+
+Today the mixer's volume reaches every output as CC 7, including the internal
+synth, which applies it inside. Once the host has a real mixer that would apply
+twice.
+
+For an output the host mixes, the fader becomes **host gain** and is no longer
+sent as CC 7. A CC 7 written into the *score* still reaches the plugin, as
+automation, which is what it always was.
+
+That is a cleaner split than the precedence rule §8 needed while the fader and
+the automation were the same controller, and it is how a DAW divides them: the
+strip is the host's, the controller is the music's.
+
+### 9a.4 One instance per track, unless the output says otherwise
+
+CLAP's convention is an instance per track. Applied blindly it would give four
+instances of the internal synth for four tracks, when one of it already plays
+sixteen channels.
+
+So an output type declares whether it is multi-timbral. Tracks routed to a
+multi-timbral output **share one instance** and keep their channels; tracks
+routed to any other get **one instance each**, and each sees a single channel.
+
+Without the flag one of the two cases is wrong: either instances are wasted, or
+the multi-timbral behaviour that already works is thrown away.
+
+### 9a.5 The host owns the sample rate
+
+`AudioSource::sample_rate()` currently has the source *declare* its rate, which
+works because there is exactly one of them. With several, the device runs at one
+rate and everything else has to accept it.
+
+It becomes the other direction: the host prepares each source with the rate and
+the maximum block size, which is also what CLAP's `activate()` does. An output
+that cannot run at the offered rate says so and is not used, rather than
+silently running at the wrong speed.
+
+### 9a.6 The graph
+
+Per block, the host: dispatches each track's events to the output that track
+names; pulls frames from every audio output; applies each track's gain and pan;
+sums; applies the master; hands the result to the device. MIDI tracks are
+dispatched the same way and contribute nothing to the sum, having already left.
+
+### 9a.7 Deliberately deferred again
+
+**Latency compensation.** A plugin can report its latency and a host is supposed
+to delay everything else to match. Worth doing only once something reports one.
+
+**Plugin GUIs** (§4.2), for the same reason as before, and now with a second: a
+plugin window would have to live over a WebView.
+
+**Per-track output persistence** waits on §10.2, like everything else about
+where output settings live.
+
+### 9a.8 What has to be decided before writing it
+
+- Does a track *have* to name an output, or does it inherit a project default?
+  Inheriting keeps existing documents working and keeps the common case one
+  choice rather than one per track.
+- What happens to a track whose output is missing when the project opens — the
+  §8 failure path, but now per track rather than once.
 
 ## 10. Open decisions
 
