@@ -1,9 +1,14 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { CoreBridge } from '../../bridge/coreBridge';
 
 @customElement('mc-status-bar')
 export class StatusBar extends LitElement {
+    /** Comes from the core, through app-root. Not a literal here: this used to
+        carry its own copy and was two releases out of date while the About
+        dialog reported the real one. */
+    @property() version = '';
+
     @state() private isNative = false;
     @state() private midiOutDevice: string | null = null;
     @state() private midiInDevice: string | null = null;
@@ -88,7 +93,7 @@ export class StatusBar extends LitElement {
                 ${this.midiInDevice ? html`<span class="midi-status">| IN: ${this.midiInDevice}</span>` : ''}
             </div>
             <div class="status-item">
-                <span>MIDI Composer v0.1.0</span>
+                <span>MIDI Composer${this.version ? ` v${this.version}` : ''}</span>
             </div>
         `;
     }

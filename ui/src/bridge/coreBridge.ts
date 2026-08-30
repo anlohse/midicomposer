@@ -115,7 +115,9 @@ export class CoreBridge {
     }
 
     private static mockResponse(type: string): any {
-        if (type === 'get_version') return '0.1.0-mock';
+        // Deliberately 0.0.0: a mock that looks like a release number drifts
+        // out of date exactly like a hardcoded one, with nothing to catch it.
+        if (type === 'get_version') return '0.0.0-mock';
         if (type === 'ping') return 'pong-mock';
         if (type === 'get_open_documents') return [];
         return {};
