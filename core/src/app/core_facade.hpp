@@ -4,6 +4,7 @@
 #include "document_manager.hpp"
 #include "edit/edit_service.hpp"
 #include "playback/playback_engine.hpp"
+#include "playback/system_midi_output.hpp"
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -108,8 +109,8 @@ public:
                                          base::EventId event_id);
 
     // Transport
-    void play(base::CompositionId doc_id);
-    void record(base::CompositionId doc_id);
+    base::Result<void> play(base::CompositionId doc_id);
+    base::Result<void> record(base::CompositionId doc_id);
     void stop();
     void pause();
     void shutdown();
@@ -121,6 +122,9 @@ public:
 
     [[nodiscard]] playback::PlaybackEngine& playback_engine() { return m_playback_engine; }
     [[nodiscard]] device::MidiService& midi_service() { return m_midi_service; }
+    /** The selected output. One for now; selecting between several is what the
+        configuration schema in the spec is for. */
+    [[nodiscard]] playback::SystemMidiOutput& output() { return m_output; }
 
     void ping();
 
@@ -152,6 +156,8 @@ private:
 
 
     device::MidiService m_midi_service;
+    // Declared before the engine: the engine holds a reference to it.
+    playback::SystemMidiOutput m_output;
     DocumentManager m_document_manager;
     edit::EditService m_edit_service;
     playback::PlaybackEngine m_playback_engine;

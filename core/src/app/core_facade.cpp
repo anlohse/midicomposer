@@ -108,7 +108,7 @@ const mc::music::Track* find_track_const(const mc::music::Composition& comp, mc:
 
 namespace midi_composer::app {
 
-CoreFacade::CoreFacade() : m_playback_engine(m_midi_service) {
+CoreFacade::CoreFacade() : m_playback_engine(m_midi_service, m_output) {
     MC_LOG_INFO("CoreFacade initialized");
 }
 
@@ -124,15 +124,11 @@ void CoreFacade::initialize() {
             on_recorded_note(pitch, velocity, start_tick, duration);
         });
 
-    // Auto-open first available MIDI output port
-    auto devices = m_midi_service.get_output_devices();
-    if (!devices.empty()) {
-        MC_LOG_INFO("Auto-opening first available MIDI device: {}", devices[0].name);
-        if (auto result = m_midi_service.open_output_port(devices[0].index); !result) {
-            MC_LOG_WARN("Failed to open MIDI output: {}", result.error().message);
-        }
-    } else {
-        MC_LOG_WARN("No MIDI output devices found during initialization");
+    // A fresh install has to make sound with nobody configuring anything, so
+    // the output opens a port up front. Which one is the plugin's decision: the
+    // facade has no idea what a reasonable default port would be.
+    if (auto result = m_output.open_default_port(); !result) {
+        MC_LOG_WARN("No MIDI output opened at startup: {}", result.error().message);
     }
 }
 
@@ -660,22 +656,24 @@ void CoreFacade::ping() {
     MC_LOG_DEBUG("Ping received in CoreFacade");
 }
 
-void CoreFacade::play(base::CompositionId doc_id) {
+base::Result<void> CoreFacade::play(base::CompositionId doc_id) {
     std::lock_guard lock(m_doc_mutex);
     auto* doc = m_document_manager.get_document(doc_id);
-    if (doc) {
-        m_transport_doc_id = doc_id;
-        m_playback_engine.play(*doc);
-    }
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    // Reported rather than swallowed: an output that cannot start is the
+    // difference between "nothing happened" and a sentence saying why.
+    if (auto started = m_playback_engine.play(*doc); !started) return started;
+    m_transport_doc_id = doc_id;
+    return {};
 }
 
-void CoreFacade::record(base::CompositionId doc_id) {
+base::Result<void> CoreFacade::record(base::CompositionId doc_id) {
     std::lock_guard lock(m_doc_mutex);
     auto* doc = m_document_manager.get_document(doc_id);
-    if (doc) {
-        m_transport_doc_id = doc_id;
-        m_playback_engine.record(*doc);
-    }
+    if (!doc) return std::unexpected(base::Error{base::ErrorCode::NotFound, "Document not found"});
+    if (auto started = m_playback_engine.record(*doc); !started) return started;
+    m_transport_doc_id = doc_id;
+    return {};
 }
 
 void CoreFacade::stop() {

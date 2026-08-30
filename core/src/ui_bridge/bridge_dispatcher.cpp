@@ -351,7 +351,9 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto res = m_core.set_track_program(doc_id, track_id, payload.at("program").get<uint8_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "get_midi_output_devices") {
-            auto devices = m_core.midi_service().get_output_devices();
+            // Still the same command and the same shape: ports are the output
+            // plugin's own business now, but nothing above here changed.
+            auto devices = m_core.output().ports();
             auto arr = nlohmann::json::array();
             for (const auto& dev : devices) {
                 arr.push_back({{"index", dev.index}, {"name", dev.name}});
@@ -359,12 +361,12 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             response["result"] = arr;
         } else if (type == "open_midi_output") {
             int index = payload.at("index").get<int>();
-            auto res = m_core.midi_service().open_output_port(index);
+            auto res = m_core.output().open_port(index);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "close_midi_output") {
-            m_core.midi_service().close_output_port();
+            m_core.output().close_port();
         } else if (type == "is_midi_output_open") {
-            response["result"] = m_core.midi_service().is_output_open();
+            response["result"] = m_core.output().is_port_open();
         } else if (type == "get_midi_input_devices") {
             auto devices = m_core.midi_service().get_input_devices();
             auto arr = nlohmann::json::array();
@@ -382,10 +384,12 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             response["result"] = m_core.midi_service().is_input_open();
         } else if (type == "play") {
             base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
-            m_core.play(doc_id);
+            auto res = m_core.play(doc_id);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "record") {
             base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
-            m_core.record(doc_id);
+            auto res = m_core.record(doc_id);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "stop") {
             m_core.stop();
         } else if (type == "pause") {
