@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -46,6 +47,27 @@ public:
     [[nodiscard]] std::string_view name() const override { return "SPC-700"; }
 
     [[nodiscard]] AudioSource* audio() override { return this; }
+
+    // ── Configuration ────────────────────────────────────────────────────────
+
+    [[nodiscard]] std::vector<Parameter> parameters() const override;
+    [[nodiscard]] ParameterValue get_parameter(std::string_view name) const override;
+    base::Result<void> set_parameter(std::string_view name, const ParameterValue& value) override;
+
+    /**
+     * How a path becomes instruments.
+     *
+     * Injected rather than called directly, so this layer keeps knowing nothing
+     * about file formats -- the same reason the engine does not know what a
+     * track is. The facade supplies the reader; adding one for `.spc` later
+     * changes what is passed in here and nothing in this file.
+     */
+    using BankLoader =
+        std::function<base::Result<std::shared_ptr<const SampleBank>>(const std::string&)>;
+    void set_bank_loader(BankLoader loader) { m_loader = std::move(loader); }
+
+    /** What the bank parameter currently names, for the status bar. */
+    [[nodiscard]] std::string bank_path() const;
 
     /**
      * Replace the instruments, safely, while sound is playing.
@@ -175,6 +197,8 @@ private:
 
     mutable std::mutex m_bank_mutex;
     std::shared_ptr<const SampleBank> m_bank;         // guarded by m_bank_mutex
+    std::string m_bank_path;                          // guarded by m_bank_mutex
+    BankLoader m_loader;
 
     int m_sample_rate{48000};
     std::atomic<int>      m_active_voices{0};

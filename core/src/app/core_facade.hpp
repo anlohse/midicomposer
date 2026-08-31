@@ -8,6 +8,7 @@
 #include "playback/internal_synth_output.hpp"
 #include "playback/clap_library.hpp"
 #include "playback/routing_output.hpp"
+#include "playback/spc700_output.hpp"
 #include "playback/system_midi_output.hpp"
 #include "preferences.hpp"
 #include <functional>
@@ -216,6 +217,7 @@ private:
     // Declared before the engine: it is constructed with one of them.
     playback::SystemMidiOutput   m_system_output;
     playback::InternalSynthOutput m_synth_output;
+    playback::Spc700Output       m_spc_output;
     playback::OutputPlugin*      m_selected_output{&m_system_output};
     // What the engine actually plays into. The selected output is the default
     // behind it, and is what the UI configures and reports.

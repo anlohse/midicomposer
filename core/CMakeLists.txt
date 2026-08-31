@@ -87,6 +87,8 @@ target_sources(midi_composer_core
         src/io/midi_file.cpp
         src/io/wav_file.hpp
         src/io/wav_file.cpp
+        src/io/sf2_file.hpp
+        src/io/sf2_file.cpp
         src/shell/application.hpp
         src/shell/application.cpp
         src/shell/file_dialogs.hpp
@@ -241,6 +243,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/persistence_tests.cpp
         tests/playback_tests.cpp
         tests/preferences_tests.cpp
+        tests/sf2_tests.cpp
         tests/spc700_tests.cpp
         tests/timeline_tests.cpp
         tests/ui_bundle_tests.cpp
