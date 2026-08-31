@@ -4,6 +4,7 @@
 #include "project/project_serializer.hpp"
 #include "io/midi_file.hpp"
 #include "io/wav_file.hpp"
+#include "io/sf2_file.hpp"
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -129,6 +130,15 @@ CoreFacade::~CoreFacade() {
 
 void CoreFacade::initialize() {
     MC_LOG_INFO("Initializing CoreFacade...");
+
+    // The sampler reads files; this layer is where knowing about file formats
+    // belongs, so it hands the reader down rather than the output reaching up.
+    m_spc_output.set_bank_loader([](const std::string& path)
+                                     -> base::Result<std::shared_ptr<const playback::SampleBank>> {
+        auto loaded = io::load_sf2(path);
+        if (!loaded) return std::unexpected(loaded.error());
+        return std::shared_ptr<const playback::SampleBank>(*loaded);
+    });
 
     m_playback_engine.set_note_commit_callback(
         [this](uint8_t pitch, uint8_t velocity, int64_t start_tick, int64_t duration) {
@@ -578,7 +588,7 @@ void CoreFacade::follow_output_audio() {
 }
 
 std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
-    std::vector<playback::OutputPlugin*> all{&m_system_output, &m_synth_output};
+    std::vector<playback::OutputPlugin*> all{&m_system_output, &m_synth_output, &m_spc_output};
     for (const auto& plugin : m_clap_outputs) all.push_back(plugin.get());
     return all;
 }

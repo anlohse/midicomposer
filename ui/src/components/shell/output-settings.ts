@@ -68,6 +68,11 @@ export function headlineValue(info: OutputInfo | null): string | null {
     if (p.type === 'enum') {
         return p.choices?.find(c => c.value === p.value)?.label ?? String(p.value);
     }
+    if (p.type === 'file') {
+        // The file's name, not its path. A status bar has room for one of them,
+        // and the useful one is which bank is loaded rather than where it lives.
+        return String(p.value).split(/[\/]/).pop() || String(p.value);
+    }
     return String(p.value);
 }
 

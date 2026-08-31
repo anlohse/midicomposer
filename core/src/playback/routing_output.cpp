@@ -4,6 +4,7 @@
 
 #include "playback/clap_instance.hpp"
 #include "playback/internal_synth_output.hpp"
+#include "playback/spc700_output.hpp"
 
 #include <algorithm>
 
@@ -137,6 +138,8 @@ void RoutingOutput::set_host_sample_rate(int rate) {
             synth->set_sample_rate(rate);
         } else if (auto* clap = dynamic_cast<ClapInstance*>(target)) {
             clap->set_sample_rate(rate);
+        } else if (auto* spc = dynamic_cast<Spc700Output*>(target)) {
+            spc->set_sample_rate(rate);
         }
     }
 }

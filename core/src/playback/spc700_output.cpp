@@ -5,14 +5,6 @@
 
 namespace midi_composer::playback {
 
-namespace {
-
-double midi_to_hz(double note) {
-    return 440.0 * std::pow(2.0, (note - 69.0) / 12.0);
-}
-
-} // namespace
-
 // ── EventQueue ───────────────────────────────────────────────────────────────
 
 bool Spc700Output::EventQueue::push(const Event& e) {
@@ -51,6 +43,66 @@ void Spc700Output::set_bank(std::shared_ptr<const SampleBank> bank) {
 std::shared_ptr<const SampleBank> Spc700Output::bank() const {
     std::lock_guard lock(m_bank_mutex);
     return m_bank;
+}
+
+std::string Spc700Output::bank_path() const {
+    std::lock_guard lock(m_bank_mutex);
+    return m_bank_path;
+}
+
+// ── Configuration ────────────────────────────────────────────────────────────
+
+std::vector<Parameter> Spc700Output::parameters() const {
+    Parameter bank;
+    bank.name     = "bank";
+    bank.label    = "Sample bank";
+    bank.type     = ParameterType::File;
+    bank.headline = true;      // what the status bar shows beside the name
+    bank.filter   = "*.sf2";
+    return {bank};
+}
+
+ParameterValue Spc700Output::get_parameter(std::string_view name) const {
+    if (name != "bank") return {};
+    std::lock_guard lock(m_bank_mutex);
+    if (m_bank_path.empty()) return {};   // monostate: nothing loaded
+    return m_bank_path;
+}
+
+base::Result<void> Spc700Output::set_parameter(std::string_view name,
+                                               const ParameterValue& value) {
+    if (name != "bank") {
+        return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                           "Unknown parameter: " + std::string(name)});
+    }
+    const auto* path = std::get_if<std::string>(&value);
+    if (!path) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
+                                           "A sample bank is a path"});
+    }
+
+    if (path->empty()) {
+        // Clearing is a legitimate choice, and the only way back to silence
+        // without restarting.
+        set_bank(nullptr);
+        std::lock_guard lock(m_bank_mutex);
+        m_bank_path.clear();
+        return {};
+    }
+    if (!m_loader) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidState,
+                                           "No sample bank reader is available"});
+    }
+
+    // Loaded before anything is replaced, so a file that will not open leaves
+    // the instruments that were already playing exactly as they were.
+    auto loaded = m_loader(*path);
+    if (!loaded) return std::unexpected(loaded.error());
+
+    set_bank(*loaded);
+    std::lock_guard lock(m_bank_mutex);
+    m_bank_path = *path;
+    return {};
 }
 
 // ── OutputPlugin ─────────────────────────────────────────────────────────────
