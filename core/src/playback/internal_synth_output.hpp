@@ -69,7 +69,11 @@ public:
 
     // ── AudioSource ──────────────────────────────────────────────────────────
 
-    [[nodiscard]] int sample_rate() const override { return kSampleRate; }
+    [[nodiscard]] int sample_rate() const override { return m_sample_rate; }
+
+    /** The host decides the rate when several outputs share a device (§9a.5).
+        32kHz is the chip's, and the default when nobody says otherwise. */
+    void set_sample_rate(int rate) { if (rate > 0) m_sample_rate = rate; }
     void begin_block(int64_t start_us) override;
     void render(float* interleaved, int frames) override;
     [[nodiscard]] int tail_frames() const override;
@@ -89,9 +93,11 @@ public:
     }
 
 private:
-    // The S-DSP's rate, and its polyphony. Eight is a limit worth keeping: it is
-    // the constraint that shaped how music was written for the machine.
-    static constexpr int kSampleRate = 32000;
+    // The chip's rate, which is only the default now: rendering happens at
+    // whatever the host asks for, because several outputs share one device.
+    // Eight voices is a limit worth keeping: it is the constraint that shaped
+    // how music was written for the machine.
+    static constexpr int kDefaultSampleRate = 32000;
     static constexpr int kVoices     = 8;
     static constexpr int kChannels   = 16;
     static constexpr int kWaveLength = 256;
@@ -185,6 +191,7 @@ private:
     std::array<std::vector<float>, 4> m_waves;
     std::atomic<int> m_waveform{0};
 
+    int m_sample_rate{kDefaultSampleRate};
     std::atomic<int>      m_active_voices{0};
     std::atomic<uint64_t> m_dropped{0};
 };

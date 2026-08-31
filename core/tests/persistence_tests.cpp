@@ -2,10 +2,12 @@
 
 #include "io/midi_file.hpp"
 #include "music/composition.hpp"
+#include "io/wav_file.hpp"
 #include "project/project_serializer.hpp"
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 using namespace midi_composer;
 
@@ -239,4 +241,23 @@ TEST_CASE("a project saved before the master fader existed loads at unity") {
     const auto loaded = project::ProjectSerializer::from_json(json);
     REQUIRE(loaded.has_value());
     CHECK(loaded->master_volume() == 127);
+}
+
+TEST_CASE("a WAV is written where it was asked, backslashes included") {
+    const auto dir = std::filesystem::temp_directory_path() / "mc_wav_test";
+    std::filesystem::create_directories(dir);
+    const std::vector<float> audio(64, 0.5f);
+
+    // Forward slashes, which is what the tests had been using.
+    const auto slashes = (dir / "slashes.wav").generic_string();
+    REQUIRE(io::write_wav(slashes, audio, 48000).has_value());
+    CHECK(std::filesystem::exists(slashes));
+
+    // And the native form, which is what a Windows file dialog hands back and
+    // what the UI passes through.
+    std::string backslashes = (dir / "backslashes.wav").string();
+    REQUIRE(io::write_wav(backslashes, audio, 48000).has_value());
+    CHECK(std::filesystem::exists(backslashes));
+
+    std::filesystem::remove_all(dir);
 }

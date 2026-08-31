@@ -1,5 +1,6 @@
 #pragma once
 
+#include "playback/audio_mixer.hpp"
 #include "playback/output_plugin.hpp"
 
 #include <array>
@@ -29,7 +30,16 @@ namespace midi_composer::playback {
 class RoutingOutput final : public OutputPlugin {
 public:
     [[nodiscard]] std::string_view id() const override { return "routing"; }
-    [[nodiscard]] std::string_view name() const override { return "Routing"; }
+
+    /**
+     * The name of whatever a channel falls back to.
+     *
+     * This layer is never chosen by anyone, so naming it in a message names
+     * something the reader has never heard of: "the selected output does not
+     * produce audio (Routing)" tells them nothing. What they picked is the
+     * default, so that is what an error should call it.
+     */
+    [[nodiscard]] std::string_view name() const override;
 
     /** Where channels go when nothing routes them. Never null in practice. */
     void set_default_target(OutputPlugin* target);
@@ -63,19 +73,24 @@ public:
     [[nodiscard]] std::optional<base::Error> failure() const override;
 
     /**
-     * The audio of the one target that makes its own sound.
+     * Everything that makes sound, summed.
      *
-     * Null when none does, and **also null when more than one does** -- summing
-     * several sources is the mixing bus that does not exist yet, and answering
-     * with one of them would silently drop the others. Saying no is the honest
-     * answer until there is something to sum with.
+     * Null only when nothing does. Several sources go through the mixer rather
+     * than one of them being picked and the rest silently dropped, which is
+     * what routing one track to the internal synth and another to a plugin
+     * used to do.
      */
     [[nodiscard]] AudioSource* audio() override;
+
+    /** The rate every audio target is asked to run at. */
+    void set_host_sample_rate(int rate);
 
 private:
     mutable std::mutex m_mutex;
     OutputPlugin* m_default{nullptr};
     std::array<OutputPlugin*, 16> m_routes{};
+    AudioMixer m_mixer;
+    int m_host_sample_rate{48000};
 };
 
 } // namespace midi_composer::playback

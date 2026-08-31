@@ -1,8 +1,18 @@
 #include "routing_output.hpp"
 
+#include "base/logger.hpp"
+
+#include "playback/clap_instance.hpp"
+#include "playback/internal_synth_output.hpp"
+
 #include <algorithm>
 
 namespace midi_composer::playback {
+
+std::string_view RoutingOutput::name() const {
+    std::lock_guard lock(m_mutex);
+    return m_default ? m_default->name() : std::string_view{"No output"};
+}
 
 void RoutingOutput::set_default_target(OutputPlugin* target) {
     std::lock_guard lock(m_mutex);
@@ -37,16 +47,27 @@ base::Result<void> RoutingOutput::start() {
     // Every reachable target, not just the default: a track routed elsewhere
     // needs its output opened too, and the first failure is what the user is
     // told about.
+    // Start what can start, rather than refusing everything because one output
+    // could not. Which output is the project's is not the same as which ones a
+    // composition uses: refusing here left a piece with every track routed
+    // elsewhere silent because a MIDI port nothing played through was missing.
+    //
+    // Only when *nothing* can start is there nothing to play, and that is when
+    // the user is told. A failure among several is logged, because a sentence
+    // nobody asked for is worse than the music they did.
+    std::optional<base::Error> first_failure;
+    int started = 0;
     for (auto* target : targets()) {
-        if (auto started = target->start(); !started) {
-            // Named, because with several outputs in play "no port is open"
-            // does not say whose, and the one that failed may not be the one
-            // the user was listening to.
-            return std::unexpected(base::Error{
-                started.error().code,
-                std::string(target->name()) + ": " + started.error().message});
+        if (auto ok = target->start(); ok) {
+            ++started;
+        } else if (!first_failure) {
+            // Named: with several outputs, "no port is open" does not say whose.
+            first_failure = base::Error{ok.error().code,
+                                        std::string(target->name()) + ": " + ok.error().message};
+            MC_LOG_WARN("Output unavailable: {}", first_failure->message);
         }
     }
+    if (started == 0 && first_failure) return std::unexpected(*first_failure);
     return {};
 }
 
@@ -82,14 +103,34 @@ std::optional<base::Error> RoutingOutput::failure() const {
 }
 
 AudioSource* RoutingOutput::audio() {
-    AudioSource* found = nullptr;
+    std::vector<AudioSource*> sources;
     for (auto* target : targets()) {
-        if (auto* source = target->audio()) {
-            if (found) return nullptr;   // more than one: see the header
-            found = source;
+        if (auto* source = target->audio()) sources.push_back(source);
+    }
+    if (sources.empty()) return nullptr;
+
+    // Rebuilt on every ask rather than cached: the ask happens when routing
+    // changed, which is exactly when the set of sources may have.
+    m_mixer.set_sources(std::move(sources), m_host_sample_rate);
+    return &m_mixer;
+}
+
+void RoutingOutput::set_host_sample_rate(int rate) {
+    if (rate <= 0) return;
+    {
+        std::lock_guard lock(m_mutex);
+        m_host_sample_rate = rate;
+    }
+    // Told once, before anything starts. A plugin has to be activated at the
+    // rate it will be rendered at, so changing it later would mean stopping
+    // and reactivating everything.
+    for (auto* target : targets()) {
+        if (auto* synth = dynamic_cast<InternalSynthOutput*>(target)) {
+            synth->set_sample_rate(rate);
+        } else if (auto* clap = dynamic_cast<ClapInstance*>(target)) {
+            clap->set_sample_rate(rate);
         }
     }
-    return found;
 }
 
 } // namespace midi_composer::playback
