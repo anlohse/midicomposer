@@ -454,21 +454,44 @@ directory with `\` and with `/`.
 The lesson is about the harness, not the bridge: a probe that has to escape its
 own payload is measuring itself as much as its subject.
 
-## 10. Open decisions
+## 10. Decisions
 
-### 10.1 Does the metronome go through the plugin?
+### 10.1 Does the metronome go through the plugin? -- decided
 
-The engine plays the click as `note_on` on channel 9. Under this design it
-reaches the selected plugin — so an SPC with no percussion samples means the
-metronome silently stops working, and it will be reported as a metronome bug
-rather than an output one.
+**It goes through a plugin: the one the first track uses.**
 
-Either the click goes through the plugin and every plugin has to deal with it, or
-the metronome keeps its own path, always on system MIDI, independent of the
-selected output.
+The engine plays the click as `note_on` on channel 9. That made "where does the
+click go" a question answered by whoever happened to own channel 9 -- a
+percussion track routed elsewhere took the metronome with it, and a project
+with no channel 9 track sent it to the project default.
 
-This decides whether `OutputPlugin` is *the* output or *the musical* output. No
-recommendation; it needs a call.
+Neither of the two options originally posed was the answer. "Through the
+selected output" makes the click depend on a setting that has nothing to do with
+it; "its own path, always on system MIDI" makes the metronome the one thing that
+ignores every routing decision the user made, and would keep clicking through a
+device they had deliberately stopped using.
+
+The first track is neither. It is an output the user has already chosen and can
+already hear, which is what a click needs to be useful. So the metronome names
+an output directly -- `PlaybackEngine::set_metronome_output` -- and the facade
+points it at the first track's target whenever routes are rebuilt. Null means
+"wherever everything else goes", which is what a project with no tracks needs.
+
+Three consequences worth being explicit about:
+
+- **The click keeps channel 9.** For a MIDI port that is still General MIDI
+  percussion; for a plugin it is simply another channel, and the wood-block
+  pitches produce whatever the instrument has there. The click stays off the
+  track's own channel, so it never inherits the track's program or volume and
+  never steals its state.
+- **The §10.1 worry survives.** An instrument with nothing mapped near keys 76
+  and 77 clicks quietly or not at all, and it *will* be reported as a metronome
+  bug. That is the accepted cost. It is at least visible, which a click coming
+  out of a device the user forgot was selected is not.
+- **A click sounding when the routing moves is released on the output it was
+  sounding on.** A note-off delivered to the new output would leave the old one
+  holding a note nothing ever turns off, so `PlayingNote` records that it was a
+  click and the note-off follows it.
 
 ### 10.2 Does the selection live in the project or on the machine? -- decided
 
@@ -505,12 +528,21 @@ preferences more important than they are:
 - **Writing is atomic.** A temporary file beside the real one, then a rename.
   That is what stops a crash halfway through a save from turning "a few clicks"
   into a file that will not parse again.
+- **The file says whose it is.** `"application": "MIDI Composer"` -- because
+  `preferences.json` is a name many programs use and the path it sits at proves
+  nothing: a sync tool, a restored backup or a hand edit can leave someone
+  else's file there, and that file parses cleanly as ours with every field
+  missing, which is indistinguishable from a first run. A marker that says
+  something else means the file is not ours and the defaults stand. A marker
+  that is *absent* is accepted and added on the next save: the field was
+  introduced after the format was, so discarding such a file would throw away
+  settings to enforce a key that did not exist when they were written.
 - **A setting that no longer applies costs only itself.** A remembered output
   that is gone leaves the default playing and is *not* erased from the file --
   plugging the interface back in should bring the choice back with it. A
   parameter that will not apply is logged and skipped.
 
-### 10.3 Where plugins are looked for
+### 10.3 Where plugins are looked for -- decided
 
 `ClapLibrary` scanned the standard install folders plus `CLAP_PATH`, and this
 document argued that a setting of our own would be a second answer to a settled
@@ -529,10 +561,24 @@ output with the same name and none of the sound. Removing a folder does *not*
 unload what came from it, because that would silence a project to tidy up a
 list; it takes effect on the next run.
 
+**And one folder the application owns**, at `%LOCALAPPDATA%\MIDI
+Composer\Plugins`, created at startup, always scanned, and not removable from
+the list. A list of folders answers "I installed plugins somewhere already"; it
+does not answer "I have a plugin and nowhere to put it". Somewhere to put one
+has to exist before a user can be told to put one somewhere, so the folder is
+created whether or not anyone uses it, and the settings dialog opens it in the
+file manager -- a path printed in a dialog is something to retype, a folder that
+opens is somewhere to drop a file.
+
+It sits under Local rather than Roaming, unlike the preferences beside it, and
+deliberately: these are native binaries, and a roaming profile would carry one
+machine's build onto another and count against a quota besides. It is scanned
+first among the extras, so a deliberately pasted copy wins over the same plugin
+found somewhere else.
+
 ### 10.4 Still open
 
-The metronome question (§10.1) is unaffected by any of this and is still a call
-to make. Two things this file could reasonably hold and deliberately does not
+Two things the preferences file could reasonably hold and deliberately does not
 yet: whether the metronome is on, and the window's size and position. Neither
 was needed to answer §10.2, and a preferences file grows best one answered
 question at a time.

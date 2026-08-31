@@ -338,9 +338,10 @@ void PlaybackEngine::process_metronome(int64_t start_tick, int64_t end_tick) {
     if (beat_tick >= start_tick && beat_tick < end_tick && beat_tick != m_last_metronome_tick) {
         const bool is_downbeat = (k % seg.numerator) == 0;
         const uint8_t pitch = is_downbeat ? 77 : 76; // GM wood blocks
-        send_note_on(9, pitch, is_downbeat ? 110 : 90, due_us_locked(static_cast<double>(beat_tick)));
+        send_note_on(9, pitch, is_downbeat ? 110 : 90,
+                     due_us_locked(static_cast<double>(beat_tick)), /*metronome*/ true);
         // Schedule the matching note-off through the regular machinery.
-        m_playing_notes.push_back({9, pitch, beat_tick + beat_ticks / 2});
+        m_playing_notes.push_back({9, pitch, beat_tick + beat_ticks / 2, /*metronome*/ true});
         m_last_metronome_tick = beat_tick;
     }
 }
@@ -358,7 +359,7 @@ void PlaybackEngine::dispatch_slice_locked(int64_t start_tick, int64_t end_tick,
     while (it != m_playing_notes.end()) {
         if (it->end_tick <= end_tick) {
             send_note_off(it->channel, it->pitch,
-                          due_us_locked(static_cast<double>(it->end_tick)));
+                          due_us_locked(static_cast<double>(it->end_tick)), it->metronome);
             it = m_playing_notes.erase(it);
         } else {
             ++it;
@@ -698,14 +699,46 @@ void PlaybackEngine::send_effective_state_locked(int64_t tick, int64_t now_us) {
 }
 
 void PlaybackEngine::send_note_on(uint8_t channel, uint8_t pitch, uint8_t velocity,
-                                  int64_t when_us) {
+                                  int64_t when_us, bool metronome) {
     if (!m_output_started) return;
-    m_output->note_on(channel, pitch, velocity, when_us);
+    auto* target = metronome ? metronome_output_locked() : m_output;
+    target->note_on(channel, pitch, velocity, when_us);
 }
 
-void PlaybackEngine::send_note_off(uint8_t channel, uint8_t pitch, int64_t when_us) {
+void PlaybackEngine::send_note_off(uint8_t channel, uint8_t pitch, int64_t when_us,
+                                   bool metronome) {
     if (!m_output_started) return;
-    m_output->note_off(channel, pitch, when_us);
+    auto* target = metronome ? metronome_output_locked() : m_output;
+    target->note_off(channel, pitch, when_us);
+}
+
+OutputPlugin* PlaybackEngine::metronome_output_locked() const {
+    return m_metronome_output ? m_metronome_output : m_output;
+}
+
+void PlaybackEngine::set_metronome_output(OutputPlugin* output) {
+    std::lock_guard lock(m_state_mutex);
+    if (m_metronome_output == output) return;
+
+    // Silence a click already sounding before moving: its note-off would
+    // otherwise be sent to the new output, leaving the old one holding a note
+    // nothing will ever turn off.
+    if (m_output_started) {
+        auto* previous = metronome_output_locked();
+        const int64_t now_us = steady_us();
+        for (const auto& note : m_playing_notes) {
+            if (note.metronome) previous->note_off(note.channel, note.pitch, now_us);
+        }
+    }
+    std::erase_if(m_playing_notes, [](const PlayingNote& n) { return n.metronome; });
+
+    m_metronome_output = output;
+    // Only on a change, because routes are rebuilt on every document edit.
+    // Worth a line: where the click comes from is otherwise invisible, and "the
+    // metronome stopped working" is what an instrument with nothing mapped near
+    // the wood-block keys looks like from outside.
+    MC_LOG_INFO("Metronome follows {}",
+                std::string(metronome_output_locked()->name()));
 }
 
 int64_t PlaybackEngine::due_us_locked(double tick) const {
@@ -720,7 +753,7 @@ int64_t PlaybackEngine::due_us_locked(double tick) const {
 void PlaybackEngine::all_notes_off_locked() {
     const int64_t now_us = steady_us();
     for (const auto& note : m_playing_notes) {
-        send_note_off(note.channel, note.pitch, now_us);
+        send_note_off(note.channel, note.pitch, now_us, note.metronome);
     }
     m_playing_notes.clear();
 }

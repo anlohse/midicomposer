@@ -234,6 +234,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/clap_tests.cpp
         tests/edit_service_tests.cpp
         tests/file_filter_tests.cpp
+        tests/metronome_tests.cpp
         tests/persistence_tests.cpp
         tests/playback_tests.cpp
         tests/preferences_tests.cpp

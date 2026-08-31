@@ -533,6 +533,27 @@ void CoreFacade::refresh_routes(const project::ProjectDocument& doc) {
         // falling silent with nothing to explain it.
     }
 
+    // The click follows the first track (§10.1). A metronome is not in the
+    // document, so it has no output of its own to name and no channel of its
+    // own to be routed by -- it borrows channel 9, which a percussion track may
+    // be using for real notes. Taking the first track's output means the click
+    // comes out of something the user can hear and has already configured,
+    // rather than out of whoever happens to own channel 9.
+    //
+    // The known cost: an instrument with nothing mapped near the wood-block
+    // keys clicks quietly or not at all. That is the trade §10.1 named, and it
+    // is visible -- a metronome you cannot hear is reported, unlike one playing
+    // out of a device you forgot was selected.
+    const auto& tracks = doc.composition().tracks();
+    playback::OutputPlugin* click = nullptr;
+    if (!tracks.empty()) {
+        click = routes[tracks.front().midi_channel() & 0x0F];
+        // An empty output_id means the track follows the project's, and so
+        // does the click. Null lets the engine fall back rather than making
+        // the facade name the same default twice.
+    }
+    m_playback_engine.set_metronome_output(click);
+
     // Rebuilt on every document change, so only a real move is worth acting on.
     if (m_routing.set_routes(routes)) {
         m_playback_engine.outputs_changed();
@@ -574,9 +595,30 @@ std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
     return all;
 }
 
+std::vector<std::string> CoreFacade::plugin_search_paths() const {
+    std::vector<std::string> paths;
+    // The application's own folder first among the extras: it is the one place
+    // the user was told to paste a plugin into, so if the same plugin is also
+    // sitting somewhere else, the deliberate copy is the one that wins.
+    if (const auto own = Preferences::plugin_folder(); !own.empty()) {
+        const auto text = own.u8string();
+        paths.emplace_back(reinterpret_cast<const char*>(text.c_str()), text.size());
+    }
+    const auto& extra = m_preferences.clap_search_paths();
+    paths.insert(paths.end(), extra.begin(), extra.end());
+    return paths;
+}
+
 void CoreFacade::discover_clap_plugins() {
-    for (const auto& file : playback::ClapLibrary::find_plugin_files(
-             m_preferences.clap_search_paths())) {
+    // Created rather than merely looked at: a folder the user is told to paste
+    // into has to be there when they go looking for it.
+    if (const auto own = Preferences::plugin_folder(); !own.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(own, ec);
+        if (ec) MC_LOG_WARN("Could not create the plugin folder");
+    }
+
+    for (const auto& file : playback::ClapLibrary::find_plugin_files(plugin_search_paths())) {
         // Already open: scanning runs again whenever the folders change, and a
         // second instance of a plugin that is currently playing would be a new
         // output with the same name and none of the sound.

@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 namespace midi_composer::app {
@@ -148,6 +149,10 @@ public:
 
     /** What this installation remembers between runs. */
     [[nodiscard]] const Preferences& preferences() const { return m_preferences; }
+
+    /** Every folder scanned for plugins: the application's own, then the
+        user's. Not the standard install locations, which ClapLibrary adds. */
+    [[nodiscard]] std::vector<std::string> plugin_search_paths() const;
 
     /**
      * Replace the folders scanned for `.clap` files, and rescan.
