@@ -6,6 +6,7 @@
 #include "playback/playback_engine.hpp"
 #include "device/audio_device.hpp"
 #include "playback/internal_synth_output.hpp"
+#include "playback/routing_output.hpp"
 #include "playback/system_midi_output.hpp"
 #include <functional>
 #include <mutex>
@@ -132,6 +133,10 @@ public:
     /** Everything that can be selected, in the order it is offered. */
     [[nodiscard]] std::vector<playback::OutputPlugin*> outputs();
     base::Result<void> select_output(std::string_view id);
+    /** Point one track at an output, or pass an empty id to follow the
+        project's. */
+    base::Result<void> set_track_output(base::CompositionId doc_id, base::TrackId track_id,
+                                        const std::string& output_id);
 
     /** Render the composition to a WAV file through the selected output. */
     base::Result<void> export_audio(base::CompositionId doc_id, const std::string& path);
@@ -170,7 +175,16 @@ private:
     playback::SystemMidiOutput   m_system_output;
     playback::InternalSynthOutput m_synth_output;
     playback::OutputPlugin*      m_selected_output{&m_system_output};
+    // What the engine actually plays into. The selected output is the default
+    // behind it, and is what the UI configures and reports.
+    playback::RoutingOutput      m_routing;
     device::AudioDevice          m_audio_device;
+
+    // Rebuilds the channel routes from a document's tracks.
+    void refresh_routes(const project::ProjectDocument& doc);
+
+    // What the device is currently pulling, so opening it again can be skipped.
+    playback::AudioSource* m_audio_source{nullptr};
 
     // Opens the device when the selected output makes its own sound, closes it
     // when it does not.

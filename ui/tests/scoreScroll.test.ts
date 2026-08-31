@@ -18,7 +18,7 @@ function doc(notes: NoteSnapshot[][], meter = [{ tick: 0, numerator: 4, denomina
         id: 1, title: 't', ppqn: PPQN, masterVolume: 127, revision: 1, dirty: false, filePath: '',
         canUndo: false, canRedo: false,
         tracks: notes.map((ns, i) => ({
-            id: String(i + 1), name: 'T', midiChannel: 0, clef: 'treble',
+            id: String(i + 1), name: 'T', midiChannel: 0, clef: 'treble', outputId: '',
             volume: 100, pan: 64, muted: false, solo: false, armed: false,
             notes: ns, controllerEvents: [], pitchBends: [], programChanges: [],
         })),

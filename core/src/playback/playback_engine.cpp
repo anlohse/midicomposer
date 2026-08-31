@@ -495,12 +495,10 @@ base::Result<RenderedAudio> PlaybackEngine::render_offline(const project::Projec
     return out;
 }
 
-void PlaybackEngine::set_output(OutputPlugin& output) {
+void PlaybackEngine::outputs_changed() {
     std::lock_guard lock(m_state_mutex);
-    m_output = &output;
-    // Whatever the previous output was told is not true of this one.
+    // Whatever the previous output was told is not true of the new one.
     for (auto& sent : m_sent_mix) sent.reset();
-    m_playing_notes.clear();
 }
 
 void PlaybackEngine::thread_proc() {

@@ -32,6 +32,8 @@ export interface TrackSnapshot {
     midiChannel: number;
     // Notation clef for this track's staff; see models/clef.ts.
     clef: string;
+    /** Which output plays this track; empty follows the project's. */
+    outputId: string;
     volume: number;
     pan: number;
     muted: boolean;

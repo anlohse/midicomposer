@@ -408,3 +408,33 @@ TEST_CASE("deleting a track and undoing restores its notes") {
     CHECK(track_of(doc).notes().size() == 1);
     CHECK(track_of(doc).notes().front().pitch == 48);
 }
+
+TEST_CASE("a new track gets a channel of its own") {
+    project::ProjectDocument doc{music::Composition{base::CompositionId{1}}};
+    edit::EditService edit;
+
+    // Sharing channel 0 would mean sharing volume, pan, instrument, bend and
+    // now the output route with the track already there.
+    const auto first = edit.create_track(doc, base::TrackId{1}, "One");
+    const auto second = edit.create_track(doc, base::TrackId{2}, "Two");
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+
+    const auto& tracks = doc.composition().tracks();
+    REQUIRE(tracks.size() == 2);
+    CHECK(tracks[0].midi_channel() != tracks[1].midi_channel());
+}
+
+TEST_CASE("channel 10 is left for percussion while anything else is free") {
+    project::ProjectDocument doc{music::Composition{base::CompositionId{1}}};
+    edit::EditService edit;
+
+    // General MIDI reserves it, and a melodic track landing there would play as
+    // drums on a GM device and as noise in the internal synth.
+    for (std::uint64_t i = 1; i <= 9; ++i) {
+        REQUIRE(edit.create_track(doc, base::TrackId{i}, "T").has_value());
+    }
+    for (const auto& t : doc.composition().tracks()) {
+        CHECK(t.midi_channel() != 9);
+    }
+}

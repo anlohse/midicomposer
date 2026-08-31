@@ -21,6 +21,16 @@ public:
     [[nodiscard]] std::uint8_t midi_channel() const noexcept { return midi_channel_; }
     void set_midi_channel(std::uint8_t channel) { midi_channel_ = channel; }
 
+    /**
+     * Which output plays this track, or empty to follow the project's.
+     *
+     * Empty by default and empty for every project written before this existed,
+     * which is what keeps one choice covering a whole composition: naming an
+     * output per track would be the common case paying for the rare one.
+     */
+    [[nodiscard]] std::string_view output_id() const noexcept { return output_id_; }
+    void set_output_id(std::string id) { output_id_ = std::move(id); }
+
     // Notation-only: which clef the score view draws this track's staff in.
     [[nodiscard]] Clef clef() const noexcept { return clef_; }
     void set_clef(Clef clef) noexcept { clef_ = clef; }
@@ -58,6 +68,7 @@ private:
     base::TrackId id_{};
     std::string name_;
     std::uint8_t midi_channel_{0}; // 0-based wire channel (channel "1" on the panel)
+    std::string output_id_;
     Clef clef_{Clef::Treble};
 
     std::uint8_t volume_{100};

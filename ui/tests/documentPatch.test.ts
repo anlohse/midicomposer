@@ -11,7 +11,7 @@ function mirror(revision = 5): DocumentSnapshot {
         timeSignatureMap: [{ tick: 0, numerator: 4, denominator: 4 }],
         keySignatureMap: [{ tick: 0, fifths: 0, minor: false }],
         tracks: [{
-            id: '7', name: 'Piano', midiChannel: 0, clef: 'treble', volume: 100, pan: 64,
+            id: '7', name: 'Piano', midiChannel: 0, clef: 'treble', outputId: '', volume: 100, pan: 64,
             muted: false, solo: false, armed: false,
             notes: [
                 { id: '1', startTick: 0, durationTicks: 480, pitch: 60, velocity: 100 },
