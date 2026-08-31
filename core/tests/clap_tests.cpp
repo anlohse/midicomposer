@@ -3,6 +3,7 @@
 #include "fake_clap_plugin.hpp"
 #include "playback/clap_instance.hpp"
 
+#include <cmath>
 #include <vector>
 
 using namespace midi_composer;
@@ -197,4 +198,50 @@ TEST_CASE("nothing is rendered before the transport starts") {
 
     CHECK(fake.blocks == 0);
     for (float sample : out) CHECK(sample == 0.0f);
+}
+
+// ─── A plugin from disk ──────────────────────────────────────────────────────
+//
+// Skipped when there is none, rather than failing: this suite has to pass on a
+// machine with no plugins installed, which is the situation the fake above
+// exists for. Point CLAP_PATH at a folder to run it for real.
+
+#include "playback/clap_library.hpp"
+
+TEST_CASE("a real .clap loads, describes itself and plays") {
+    const auto files = playback::ClapLibrary::find_plugin_files();
+    if (files.empty()) {
+        MESSAGE("No .clap found; set CLAP_PATH to run this against a real plugin");
+        return;
+    }
+
+    const auto library = playback::ClapLibrary::open(files.front());
+    REQUIRE(library.has_value());
+
+    const auto descriptors = (*library)->plugins();
+    REQUIRE_FALSE(descriptors.empty());
+    MESSAGE("Loaded ", files.front(), " -> ", descriptors.front().name,
+            " by ", descriptors.front().vendor);
+
+    auto instance = (*library)->create(descriptors.front().id, 32000);
+    REQUIRE(instance.has_value());
+    MESSAGE("dialects: midi=", (*instance)->accepts_midi(),
+            " clap=", (*instance)->accepts_clap_notes());
+
+    REQUIRE((*instance)->start().has_value());
+
+    // A note, then long enough for an envelope to open. What is asserted is
+    // that something came out, not what it sounded like.
+    (*instance)->note_on(0, 45, 100, 0);
+    std::vector<float> out(512 * 2, 0.0f);
+    float peak = 0.0f;
+    for (int block = 0; block < 40; ++block) {
+        (*instance)->begin_block(static_cast<int64_t>(block) * 16000);
+        (*instance)->render(out.data(), 512);
+        for (float s : out) peak = std::max(peak, std::abs(s));
+    }
+    (*instance)->note_off(0, 45, 0);
+
+    CHECK_FALSE((*instance)->failure().has_value());
+    CHECK(peak > 0.0f);
 }

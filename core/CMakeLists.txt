@@ -51,6 +51,8 @@ target_sources(midi_composer_core
         src/edit/edit_service.hpp
         src/edit/edit_service.cpp
         src/playback/clap_instance.hpp
+        src/playback/clap_library.hpp
+        src/playback/clap_library.cpp
         src/playback/clap_instance.cpp
         src/playback/internal_synth_output.hpp
         src/playback/internal_synth_output.cpp

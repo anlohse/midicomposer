@@ -61,6 +61,14 @@ ClapInstance::~ClapInstance() {
     if (m_initialised && m_plugin) {
         m_plugin->destroy(m_plugin);
     }
+    m_plugin = nullptr;
+    // Only now: the library holds the code the destructor above just ran.
+    m_owner.reset();
+}
+
+void ClapInstance::adopt(const clap_plugin_t* plugin, std::shared_ptr<void> owner) {
+    m_plugin = plugin;
+    m_owner = std::move(owner);
 }
 
 base::Result<void> ClapInstance::initialise() {

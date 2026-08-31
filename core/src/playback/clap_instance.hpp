@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -54,6 +55,24 @@ public:
 
     /** init(), and read the extensions that decide how events are sent. */
     base::Result<void> initialise();
+
+    /**
+     * The host descriptor to pass to create_plugin.
+     *
+     * It has to exist before the plugin does and outlive it, which is why the
+     * instance is built first and the plugin handed to it afterwards.
+     */
+    [[nodiscard]] const clap_host_t* host() const { return &m_host; }
+
+    /**
+     * Take ownership of a created plugin, and of whatever has to outlive it.
+     *
+     * `owner` is the library the plugin came from: unloading it before the
+     * plugin is destroyed would pull the code out from under the destructor, so
+     * the instance holds it rather than the caller being trusted with the
+     * order.
+     */
+    void adopt(const clap_plugin_t* plugin, std::shared_ptr<void> owner);
 
     [[nodiscard]] std::string_view id() const override { return m_id; }
     [[nodiscard]] std::string_view name() const override { return m_name; }
@@ -116,6 +135,7 @@ private:
                                 const clap_event_header_t* event);
 
     const clap_plugin_t* m_plugin{nullptr};
+    std::shared_ptr<void> m_owner;   // destroyed last: see adopt()
     std::string m_id;
     std::string m_name;
 
