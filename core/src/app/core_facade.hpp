@@ -6,6 +6,7 @@
 #include "playback/playback_engine.hpp"
 #include "device/audio_device.hpp"
 #include "playback/internal_synth_output.hpp"
+#include "playback/clap_library.hpp"
 #include "playback/routing_output.hpp"
 #include "playback/system_midi_output.hpp"
 #include <functional>
@@ -178,6 +179,16 @@ private:
     // What the engine actually plays into. The selected output is the default
     // behind it, and is what the UI configures and reports.
     playback::RoutingOutput      m_routing;
+
+    // Plugins found on disk. The libraries are held because an instance's
+    // destructor runs code that lives in them, and declared before the
+    // instances so they are torn down after.
+    std::vector<std::shared_ptr<playback::ClapLibrary>> m_clap_libraries;
+    std::vector<std::unique_ptr<playback::ClapInstance>> m_clap_outputs;
+
+    // Opens whatever CLAP plugins are installed. Failures are logged, never
+    // fatal: a plugin that will not load should cost you that plugin.
+    void discover_clap_plugins();
     device::AudioDevice          m_audio_device;
 
     // Rebuilds the channel routes from a document's tracks.

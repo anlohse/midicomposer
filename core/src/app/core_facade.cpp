@@ -134,6 +134,11 @@ void CoreFacade::initialize() {
     if (auto result = m_system_output.open_default_port(); !result) {
         MC_LOG_WARN("No MIDI output opened at startup: {}", result.error().message);
     }
+
+    // Loading a plugin runs its code, so one that crashes on load takes the
+    // application with it. A real host scans out of process; this one does not
+    // yet, which is worth knowing before pointing it at a folder of unknowns.
+    discover_clap_plugins();
 }
 
 std::string CoreFacade::get_version() const {
@@ -544,7 +549,35 @@ void CoreFacade::follow_output_audio() {
 }
 
 std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
-    return {&m_system_output, &m_synth_output};
+    std::vector<playback::OutputPlugin*> all{&m_system_output, &m_synth_output};
+    for (const auto& plugin : m_clap_outputs) all.push_back(plugin.get());
+    return all;
+}
+
+void CoreFacade::discover_clap_plugins() {
+    // The rate every hosted plugin is activated at. The host decides and tells
+    // them (§9a.5); a plugin cannot pick one when several share a device.
+    constexpr int kHostSampleRate = 48000;
+
+    for (const auto& file : playback::ClapLibrary::find_plugin_files()) {
+        auto library = playback::ClapLibrary::open(file);
+        if (!library) {
+            MC_LOG_WARN("Skipping '{}': {}", file, library.error().message);
+            continue;
+        }
+        for (const auto& descriptor : (*library)->plugins()) {
+            auto instance = (*library)->create(descriptor.id, kHostSampleRate);
+            if (!instance) {
+                // An effect rather than an instrument ends up here, refused for
+                // taking no note input. That is information, not an error.
+                MC_LOG_INFO("Not using '{}': {}", descriptor.name, instance.error().message);
+                continue;
+            }
+            MC_LOG_INFO("Plugin available: {} ({})", descriptor.name, descriptor.id);
+            m_clap_outputs.push_back(std::move(*instance));
+        }
+        m_clap_libraries.push_back(*library);
+    }
 }
 
 base::Result<void> CoreFacade::select_output(std::string_view id) {
