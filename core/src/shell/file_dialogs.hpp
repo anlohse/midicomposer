@@ -15,6 +15,15 @@ std::optional<std::string> save_file_dialog(const wchar_t* filter, const wchar_t
 // plugins, where what is wanted is the folder itself and not anything in it.
 std::optional<std::string> open_folder_dialog();
 
+// Builds a filter for open_file_dialog out of a pattern a plugin declared for
+// one of its File parameters: "*.spc", or several separated by semicolons.
+// Whitespace around a piece is trimmed and empty pieces are dropped.
+//
+// All Files is always the last entry, and the only one when nothing usable was
+// declared: a filter that hides the file the user came to pick is worse than
+// one that shows too much.
+std::wstring make_file_filter(const std::string& pattern);
+
 // Reports a failure that stops the app from starting. Startup errors happen
 // before there is a window to show them in, and a user who double-clicked the
 // executable would otherwise see nothing at all.
