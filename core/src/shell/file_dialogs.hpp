@@ -11,6 +11,10 @@ namespace midi_composer::shell {
 std::optional<std::string> open_file_dialog(const wchar_t* filter);
 std::optional<std::string> save_file_dialog(const wchar_t* filter, const wchar_t* default_extension);
 
+// Picks a directory rather than a file. Used for the folders scanned for
+// plugins, where what is wanted is the folder itself and not anything in it.
+std::optional<std::string> open_folder_dialog();
+
 // Reports a failure that stops the app from starting. Startup errors happen
 // before there is a window to show them in, and a user who double-clicked the
 // executable would otherwise see nothing at all.

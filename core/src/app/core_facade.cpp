@@ -142,6 +142,11 @@ void CoreFacade::initialize() {
         MC_LOG_WARN("No MIDI output opened at startup: {}", result.error().message);
     }
 
+    // Before discovery, because the preferences say which extra folders to
+    // scan; and before the output is restored, because the output it names may
+    // be one of the plugins found in them.
+    m_preferences.load(Preferences::default_path());
+
     // Loading a plugin runs its code, so one that crashes on load takes the
     // application with it. A real host scans out of process; this one does not
     // yet, which is worth knowing before pointing it at a folder of unknowns.
@@ -150,6 +155,10 @@ void CoreFacade::initialize() {
     // One rate for everything that makes sound: they share a device, so the
     // host decides and tells them before anything is activated (§9a.5).
     m_routing.set_host_sample_rate(kHostSampleRate);
+
+    // Last: the port a remembered output wants to open has to be opened after
+    // the default one above, or the default would win by being later.
+    restore_preferred_output();
 }
 
 std::string CoreFacade::get_version() const {
@@ -566,7 +575,16 @@ std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
 }
 
 void CoreFacade::discover_clap_plugins() {
-    for (const auto& file : playback::ClapLibrary::find_plugin_files()) {
+    for (const auto& file : playback::ClapLibrary::find_plugin_files(
+             m_preferences.clap_search_paths())) {
+        // Already open: scanning runs again whenever the folders change, and a
+        // second instance of a plugin that is currently playing would be a new
+        // output with the same name and none of the sound.
+        const bool known = std::any_of(
+            m_clap_libraries.begin(), m_clap_libraries.end(),
+            [&file](const auto& open) { return open->path() == file; });
+        if (known) continue;
+
         auto library = playback::ClapLibrary::open(file);
         if (!library) {
             MC_LOG_WARN("Skipping '{}': {}", file, library.error().message);
@@ -606,11 +624,87 @@ base::Result<void> CoreFacade::select_output(std::string_view id) {
             m_playback_engine.outputs_changed();
             follow_output_audio();
             MC_LOG_INFO("Output is now {}", std::string(candidate->name()));
+            m_preferences.set_selected_output(std::string(id));
+            save_preferences();
         }
         return {};
     }
     return std::unexpected(base::Error{base::ErrorCode::NotFound,
                                        "No such output: " + std::string(id)});
+}
+
+base::Result<void> CoreFacade::set_output_parameter(const std::string& name,
+                                                    const playback::ParameterValue& value) {
+    auto applied = m_selected_output->set_parameter(name, value);
+    if (!applied) return applied;
+
+    // Read back rather than stored as given: a plugin is entitled to normalise
+    // what it was handed, and remembering the request instead of the result
+    // would restore something the plugin already declined to be.
+    m_preferences.set_parameter(std::string(m_selected_output->id()), name,
+                                m_selected_output->get_parameter(name));
+    save_preferences();
+
+    // A parameter can change whether the output makes its own sound at all --
+    // a plugin file, for instance -- so the device follows it.
+    follow_output_audio();
+    return {};
+}
+
+void CoreFacade::restore_preferred_output() {
+    const auto& wanted = m_preferences.selected_output();
+    if (wanted.empty()) return;
+
+    playback::OutputPlugin* found = nullptr;
+    for (auto* candidate : outputs()) {
+        if (candidate->id() == wanted) { found = candidate; break; }
+    }
+    if (!found) {
+        // The §8 failure path: the device is gone, so the default keeps
+        // playing. Deliberately not cleared from the preferences -- plugging
+        // the interface back in should bring the choice back with it.
+        MC_LOG_WARN("Preferred output '{}' is not available; keeping {}", wanted,
+                    std::string(m_selected_output->name()));
+        return;
+    }
+
+    // Parameters before selection: opening a port is what start() does, and it
+    // should open the remembered one rather than the default and then the
+    // remembered one.
+    for (const auto& [name, value] : m_preferences.parameters_for(wanted)) {
+        if (auto applied = found->set_parameter(name, value); !applied) {
+            // One setting that no longer applies -- a port that was unplugged,
+            // a file that moved -- should cost that setting and nothing else.
+            MC_LOG_WARN("Could not restore {} on '{}': {}", name, wanted,
+                        applied.error().message);
+        }
+    }
+
+    if (found != m_selected_output) {
+        m_selected_output->stop();
+        m_selected_output = found;
+        m_routing.set_default_target(found);
+        m_playback_engine.outputs_changed();
+        follow_output_audio();
+    }
+    MC_LOG_INFO("Restored output {}", std::string(found->name()));
+}
+
+base::Result<void> CoreFacade::set_clap_search_paths(std::vector<std::string> paths) {
+    m_preferences.set_clap_search_paths(std::move(paths));
+    save_preferences();
+
+    // Only what is new: an instance already created may be the selected output
+    // or be named by a track in an open project, and recreating it would stop
+    // its sound to no purpose.
+    discover_clap_plugins();
+    return {};
+}
+
+void CoreFacade::save_preferences() {
+    if (auto saved = m_preferences.save(); !saved) {
+        MC_LOG_WARN("Could not save preferences: {}", saved.error().message);
+    }
 }
 
 base::Result<void> CoreFacade::export_audio(base::CompositionId doc_id, const std::string& path) {

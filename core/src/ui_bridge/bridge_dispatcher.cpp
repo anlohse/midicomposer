@@ -467,9 +467,29 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             else { response["result"] = {{"path", path}}; }
         } else if (type == "set_output_parameter") {
             const auto name = payload.at("name").get<std::string>();
-            auto res = m_core.output().set_parameter(name,
-                                                     parameter_value_from_json(payload.at("value")));
+            auto res = m_core.set_output_parameter(name,
+                                                   parameter_value_from_json(payload.at("value")));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "get_preferences") {
+            const auto& prefs = m_core.preferences();
+            nlohmann::json result;
+            result["selectedOutput"] = prefs.selected_output();
+            result["clapSearchPaths"] = prefs.clap_search_paths();
+            response["result"] = result;
+        } else if (type == "set_clap_search_paths") {
+            std::vector<std::string> paths;
+            for (const auto& entry : payload.at("paths")) {
+                if (entry.is_string()) paths.push_back(entry.get<std::string>());
+            }
+            auto res = m_core.set_clap_search_paths(std::move(paths));
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "choose_folder") {
+            // The core opens it, like every other path the core is given: a
+            // browser has no folder picker, and one typed by hand is a typo
+            // waiting to be reported as "the plugin was not found".
+            auto chosen = shell::open_folder_dialog();
+            if (!chosen) { response["result"] = {{"cancelled", true}}; }
+            else { response["result"] = {{"path", *chosen}}; }
         } else if (type == "get_midi_input_devices") {
             auto devices = m_core.midi_service().get_input_devices();
             auto arr = nlohmann::json::array();
