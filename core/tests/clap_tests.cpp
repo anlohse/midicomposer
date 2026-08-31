@@ -280,3 +280,55 @@ TEST_CASE("a real plugin can be pulled by a real audio device") {
     audio.stop();
     CHECK_FALSE((*instance)->failure().has_value());
 }
+
+TEST_CASE("how long a real plugin takes to answer a note") {
+    const auto files = playback::ClapLibrary::find_plugin_files();
+    if (files.empty()) return;
+    const auto library = playback::ClapLibrary::open(files.front());
+    REQUIRE(library.has_value());
+    auto instance = (*library)->create((*library)->plugins().front().id, 48000);
+    REQUIRE(instance.has_value());
+    REQUIRE((*instance)->start().has_value());
+
+    // Deterministic: no device, no threads. The note is due at the very first
+    // frame, so whatever silence follows is the plugin's own answer time plus
+    // anything this host adds.
+    (*instance)->note_on(0, 45, 110, 0);
+
+    constexpr int kBlock = 64;
+    std::vector<float> out(kBlock * 2, 0.0f);
+    int first_sound = -1;
+    for (int block = 0; block < 1500 && first_sound < 0; ++block) {
+        const int64_t when = static_cast<int64_t>(block) * kBlock * 1'000'000LL / 48000;
+        (*instance)->begin_block(when);
+        (*instance)->render(out.data(), kBlock);
+        for (int i = 0; i < kBlock * 2; ++i) {
+            if (std::abs(out[i]) > 0.001f) { first_sound = block * kBlock + i / 2; break; }
+        }
+    }
+    REQUIRE(first_sound >= 0);
+    MESSAGE("first audible sample: ", first_sound, " (",
+            1000.0 * first_sound / 48000.0, " ms after the note)");
+    // A plugin answering a note is not where playback latency comes from, and
+    // this is the measurement that says so.
+    CHECK(first_sound < 48000 / 20);   // under 50ms
+}
+
+TEST_CASE("how long a real plugin takes to activate") {
+    const auto files = playback::ClapLibrary::find_plugin_files();
+    if (files.empty()) return;
+    const auto library = playback::ClapLibrary::open(files.front());
+    REQUIRE(library.has_value());
+    auto instance = (*library)->create((*library)->plugins().front().id, 48000);
+    REQUIRE(instance.has_value());
+
+    // start() activates on first use. If that took hundreds of milliseconds it
+    // would delay only the plugin at the top of a transport, which is what
+    // "the MIDI comes in first" would sound like.
+    const auto before = std::chrono::steady_clock::now();
+    REQUIRE((*instance)->start().has_value());
+    const auto ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - before).count();
+    MESSAGE("start() took ", ms, " ms");
+    CHECK(ms < 250.0);
+}

@@ -404,7 +404,8 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             const auto& audio = m_core.audio_device();
             info["audioDevice"] = {{"running", audio.is_running()},
                                    {"name", audio.device_name()},
-                                   {"framesRendered", audio.frames_rendered()}};
+                                   {"framesRendered", audio.frames_rendered()},
+                                   {"latencyMs", audio.latency_ms()}};
             auto available = nlohmann::json::array();
             for (auto* candidate : m_core.outputs()) {
                 available.push_back({{"id", std::string(candidate->id())},

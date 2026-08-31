@@ -43,6 +43,16 @@ public:
 
     [[nodiscard]] std::string device_name() const;
 
+    /**
+     * How far behind real time this device is: the buffer it fills before the
+     * hardware plays it.
+     *
+     * It is the gap between an output the host renders and one that plays
+     * elsewhere the instant it is told to, such as a MIDI port, so it is worth
+     * being able to see rather than infer.
+     */
+    [[nodiscard]] double latency_ms() const;
+
     /** Fill one block. Called from the audio callback and nowhere else; public
         only because the callback is a free function the device driver owns. */
     void pull(float* interleaved, int frames);
