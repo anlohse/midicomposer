@@ -190,6 +190,53 @@ TEST_CASE("Saving with nowhere to save is an error, not a crash") {
     CHECK(result.error().code == base::ErrorCode::InvalidState);
 }
 
+TEST_CASE("The metronome's output is remembered like any other choice") {
+    TempDir dir;
+
+    app::Preferences saved;
+    saved.load(dir.file());
+    saved.set_metronome_output("co.midilab.JC303");
+    REQUIRE(saved.save().has_value());
+
+    app::Preferences loaded;
+    loaded.load(dir.file());
+    CHECK(loaded.metronome_output() == "co.midilab.JC303");
+}
+
+TEST_CASE("An unchosen metronome output is empty, not a guessed default") {
+    // The preferences do not know what outputs exist. Writing a default here
+    // would record a choice the user never made, and nothing could later tell
+    // it apart from one they did.
+    TempDir dir;
+    app::Preferences prefs;
+    prefs.load(dir.file());
+    CHECK(prefs.metronome_output().empty());
+
+    REQUIRE(prefs.save().has_value());
+    app::Preferences reloaded;
+    reloaded.load(dir.file());
+    CHECK(reloaded.metronome_output().empty());
+}
+
+TEST_CASE("Clearing the metronome output is how the reset is recorded") {
+    TempDir dir;
+    app::Preferences prefs;
+    prefs.load(dir.file());
+    prefs.set_metronome_output("a-plugin-that-was-uninstalled");
+    REQUIRE(prefs.save().has_value());
+
+    // What the facade does when the named output is gone: back to empty, and
+    // written, so the next session starts from the default rather than finding
+    // the same dead name again.
+    prefs.set_metronome_output({});
+    REQUIRE(prefs.save().has_value());
+
+    app::Preferences reloaded;
+    reloaded.load(dir.file());
+    CHECK(reloaded.metronome_output().empty());
+    CHECK(read_all(dir.file()).find("a-plugin-that-was-uninstalled") == std::string::npos);
+}
+
 TEST_CASE("The file says which application it belongs to") {
     TempDir dir;
     app::Preferences prefs;

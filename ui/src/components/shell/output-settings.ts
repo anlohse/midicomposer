@@ -35,6 +35,8 @@ export interface OutputChoice { id: string; name: string }
 export interface Preferences {
     selectedOutput: string;
     clapSearchPaths: string[];
+    /** Which output the metronome clicks through, with the default resolved. */
+    metronomeOutput: string;
     /** The application's own folder. Always scanned and never removable, so it
         is listed apart from the ones the user added. */
     pluginFolder: string;
@@ -75,6 +77,7 @@ export class OutputSettings extends LitElement {
     @state() private error: string | null = null;
     @state() private folders: string[] = [];
     @state() private pluginFolder = '';
+    @state() private metronomeOutput = '';
 
     static styles = css`
         .modal-overlay {
@@ -158,6 +161,7 @@ export class OutputSettings extends LitElement {
             const prefs = await CoreBridge.sendCommand<Preferences>('get_preferences');
             this.folders = prefs?.clapSearchPaths ?? [];
             this.pluginFolder = prefs?.pluginFolder ?? '';
+            this.metronomeOutput = prefs?.metronomeOutput ?? '';
         } catch (err) {
             // The dialog still configures the output without them; only the
             // folder list is missing, so it says so there rather than here.
@@ -183,6 +187,16 @@ export class OutputSettings extends LitElement {
         if (!chosen?.path) return;
         if (this.folders.includes(chosen.path)) return;
         await this.setFolders([...this.folders, chosen.path]);
+    }
+
+    private async setMetronomeOutput(id: string) {
+        this.error = null;
+        try {
+            await CoreBridge.sendCommand('set_metronome_output', { id });
+        } catch (err) {
+            this.error = err instanceof Error ? err.message : String(err);
+        }
+        await this.reload();
     }
 
     private async revealFolder(path: string) {
@@ -318,6 +332,27 @@ export class OutputSettings extends LitElement {
                     ${this.info && this.info.parameters.length === 0
                         ? html`<div class="empty">This output has nothing to configure.</div>`
                         : (this.info?.parameters ?? []).map(p => this.renderParameter(p))}
+
+                    <div class="section">
+                        <h4>Metronome</h4>
+                        <div class="hint">
+                            The click is not part of the composition, so it does
+                            not follow any track — it goes wherever you send it.
+                        </div>
+                        <div class="row">
+                            <label>Click through</label>
+                            <div class="control">
+                                <select @change=${(e: Event) =>
+                                    this.setMetronomeOutput((e.target as HTMLSelectElement).value)}>
+                                    ${(this.info?.available ?? []).map(o => html`
+                                        <option value=${o.id}
+                                                ?selected=${o.id === this.metronomeOutput}>
+                                            ${o.name}
+                                        </option>`)}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
 
                     <div class="section">
                         <h4>Plugin folders</h4>

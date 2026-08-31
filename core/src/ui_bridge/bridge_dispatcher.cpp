@@ -475,6 +475,9 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             const auto& prefs = m_core.preferences();
             nlohmann::json result;
             result["selectedOutput"] = prefs.selected_output();
+            // Resolved, not raw: the UI shows what the click actually goes
+            // through, and "empty means the default" is the facade's business.
+            result["metronomeOutput"] = m_core.metronome_output_id();
             result["clapSearchPaths"] = prefs.clap_search_paths();
             // Reported separately from the list above because it is not one of
             // them: it is always scanned and cannot be removed.
@@ -498,6 +501,9 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto chosen = shell::open_file_dialog(filter.c_str());
             if (!chosen) { response["result"] = {{"cancelled", true}}; }
             else { response["result"] = {{"path", *chosen}}; }
+        } else if (type == "set_metronome_output") {
+            auto res = m_core.set_metronome_output(payload.at("id").get<std::string>());
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "reveal_folder") {
             shell::reveal_folder(payload.at("path").get<std::string>());
         } else if (type == "choose_folder") {

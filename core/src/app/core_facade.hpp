@@ -147,6 +147,19 @@ public:
     base::Result<void> set_output_parameter(const std::string& name,
                                             const playback::ParameterValue& value);
 
+    /**
+     * Choose where the metronome clicks. An empty id means the default.
+     *
+     * A preference rather than something derived: which instrument a click
+     * should come out of is a matter of taste, and deriving it from the
+     * composition -- as an earlier draft did, from the first track -- made it
+     * change under the user whenever they rearranged their tracks.
+     */
+    base::Result<void> set_metronome_output(const std::string& id);
+
+    /** The output the metronome actually clicks through, default resolved. */
+    [[nodiscard]] std::string metronome_output_id() const;
+
     /** What this installation remembers between runs. */
     [[nodiscard]] const Preferences& preferences() const { return m_preferences; }
 
@@ -222,6 +235,15 @@ private:
     // What this installation remembers. Declared after the outputs it names, so
     // nothing is restored onto an output that no longer exists.
     Preferences m_preferences;
+
+    // The output a click goes to when the user has chosen none: the System MIDI
+    // output, which is the first MIDI device there is. Always present, so the
+    // default can never itself be missing.
+    [[nodiscard]] playback::OutputPlugin* default_metronome_output() { return &m_system_output; }
+
+    // Points the engine and the routing layer at whatever the preference names.
+    // Called after discovery and after any change.
+    void apply_metronome_output();
 
     // Applies the remembered output and its parameters, after discovery has
     // decided which outputs there are to apply them to.

@@ -26,6 +26,13 @@ bool RoutingOutput::set_routes(const std::array<OutputPlugin*, 16>& routes) {
     return true;
 }
 
+bool RoutingOutput::set_metronome_target(OutputPlugin* target) {
+    std::lock_guard lock(m_mutex);
+    if (m_metronome == target) return false;
+    m_metronome = target;
+    return true;
+}
+
 OutputPlugin* RoutingOutput::target_for(uint8_t channel) const {
     std::lock_guard lock(m_mutex);
     auto* routed = m_routes[channel & 0x0F];
@@ -40,6 +47,7 @@ std::vector<OutputPlugin*> RoutingOutput::targets() const {
     };
     add(m_default);
     for (auto* routed : m_routes) add(routed);
+    add(m_metronome);
     return out;
 }
 
