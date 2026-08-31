@@ -50,6 +50,8 @@ target_sources(midi_composer_core
         src/device/midi_service.cpp
         src/edit/edit_service.hpp
         src/edit/edit_service.cpp
+        src/playback/clap_instance.hpp
+        src/playback/clap_instance.cpp
         src/playback/internal_synth_output.hpp
         src/playback/internal_synth_output.cpp
         src/playback/output_plugin.hpp
@@ -102,6 +104,7 @@ target_link_libraries(midi_composer_core
     PRIVATE
         miniz
         miniaudio
+        clap_headers
 )
 
 if(WIN32)
@@ -219,6 +222,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
 
     add_executable(midi_composer_tests
         tests/main.cpp
+        tests/clap_tests.cpp
         tests/edit_service_tests.cpp
         tests/persistence_tests.cpp
         tests/playback_tests.cpp
@@ -230,6 +234,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         PRIVATE
             midi_composer_core
             doctest::doctest
+            clap_headers      # the fake plugin is written against the real ABI
             miniz          # the bundle tests write real archives to read back
     )
 

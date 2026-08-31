@@ -71,6 +71,23 @@ FetchContent_MakeAvailable(miniaudio)
 add_library(miniaudio INTERFACE)
 target_include_directories(miniaudio INTERFACE ${miniaudio_SOURCE_DIR})
 
+# CLAP — the plugin ABI, headers only and MIT. Adopted rather than invented: an
+# in-house ABI would be one nobody else ever writes a plugin for, and the whole
+# point of hosting is the instruments that already exist.
+#
+# Fetched without configuring, like miniaudio: its own build defines targets and
+# options this project has no use for.
+FetchContent_Declare(
+    clap
+    GIT_REPOSITORY https://github.com/free-audio/clap.git
+    GIT_TAG 1.2.2
+    SOURCE_SUBDIR does-not-exist
+)
+FetchContent_MakeAvailable(clap)
+
+add_library(clap_headers INTERFACE)
+target_include_directories(clap_headers INTERFACE ${clap_SOURCE_DIR}/include)
+
 # doctest — only fetched when tests are enabled, so a normal build is unaffected.
 if(MIDI_COMPOSER_BUILD_TESTS)
     # 2.4.11 declares cmake_minimum_required(3.0), which CMake 4 refuses.
