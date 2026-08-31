@@ -90,7 +90,12 @@ base::Result<void> AudioDevice::start(playback::AudioSource& source) {
     }
 
     m_running.store(true, std::memory_order_release);
-    MC_LOG_INFO("Audio device started: {} at {} Hz", device_name(), rate);
+    const auto period = m_impl->device.playback.internalPeriodSizeInFrames;
+    const auto periods = m_impl->device.playback.internalPeriods;
+    const auto actual_rate = m_impl->device.playback.internalSampleRate;
+    MC_LOG_INFO("Audio device started: {} at {} Hz (period {} frames x {} = {:.1f} ms)",
+                device_name(), rate, period, periods,
+                actual_rate ? 1000.0 * period * periods / actual_rate : 0.0);
     return {};
 }
 
@@ -103,6 +108,15 @@ void AudioDevice::stop() {
     m_running.store(false, std::memory_order_release);
     m_source = nullptr;
     MC_LOG_INFO("Audio device stopped");
+}
+
+double AudioDevice::latency_ms() const {
+    if (!m_impl->initialised) return 0.0;
+    const auto frames = m_impl->device.playback.internalPeriodSizeInFrames;
+    const auto periods = m_impl->device.playback.internalPeriods;
+    const auto rate = m_impl->device.playback.internalSampleRate;
+    if (rate == 0) return 0.0;
+    return 1000.0 * static_cast<double>(frames) * periods / rate;
 }
 
 std::string AudioDevice::device_name() const {
