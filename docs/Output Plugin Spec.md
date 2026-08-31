@@ -458,40 +458,45 @@ own payload is measuring itself as much as its subject.
 
 ### 10.1 Does the metronome go through the plugin? -- decided
 
-**It goes through a plugin: the one the first track uses.**
+**It goes through an output the user chooses. The decision is not ours.**
 
-The engine plays the click as `note_on` on channel 9. That made "where does the
-click go" a question answered by whoever happened to own channel 9 -- a
-percussion track routed elsewhere took the metronome with it, and a project
-with no channel 9 track sent it to the project default.
+The engine plays the click as `note_on` on channel 9, which left "where does the
+click go" answered by whoever happened to own that channel -- a percussion track
+routed elsewhere took the metronome with it.
 
-Neither of the two options originally posed was the answer. "Through the
-selected output" makes the click depend on a setting that has nothing to do with
-it; "its own path, always on system MIDI" makes the metronome the one thing that
-ignores every routing decision the user made, and would keep clicking through a
-device they had deliberately stopped using.
+An earlier draft answered this by following the first track's output. That was
+wrong, and worth recording as wrong rather than quietly replacing: it made the
+metronome move whenever the user rearranged their tracks, which is an edit about
+the composition producing a change in something that is not part of the
+composition. Which instrument a click comes out of is a matter of taste, and
+taste is not derivable from a document.
 
-The first track is neither. It is an output the user has already chosen and can
-already hear, which is what a click needs to be useful. So the metronome names
-an output directly -- `PlaybackEngine::set_metronome_output` -- and the facade
-points it at the first track's target whenever routes are rebuilt. Null means
-"wherever everything else goes", which is what a project with no tracks needs.
+So it is a preference, `metronomeOutput`, beside the others (§10.2):
 
-Three consequences worth being explicit about:
+- **The default is the first available MIDI device** -- the System MIDI output,
+  which always exists, so the default can never itself be missing. Stored as an
+  *empty* value rather than as `"system-midi"`: the preferences do not know what
+  outputs exist, and writing a default would record a choice the user never made
+  that nothing could later tell apart from one they did.
+- **A choice that no longer exists is reset**, not remembered: the value is
+  cleared, saved, and the default takes over. This is deliberately the opposite
+  of what a missing *project* output does (§10.2 keeps that one, so plugging an
+  interface back in brings it back). An output you cannot hear a click through
+  is one you would go and change anyway, so keeping a dead name only means
+  finding it still dead next time.
 
-- **The click keeps channel 9.** For a MIDI port that is still General MIDI
-  percussion; for a plugin it is simply another channel, and the wood-block
-  pitches produce whatever the instrument has there. The click stays off the
-  track's own channel, so it never inherits the track's program or volume and
-  never steals its state.
-- **The §10.1 worry survives.** An instrument with nothing mapped near keys 76
-  and 77 clicks quietly or not at all, and it *will* be reported as a metronome
-  bug. That is the accepted cost. It is at least visible, which a click coming
-  out of a device the user forgot was selected is not.
-- **A click sounding when the routing moves is released on the output it was
-  sounding on.** A note-off delivered to the new output would leave the old one
-  holding a note nothing ever turns off, so `PlayingNote` records that it was a
-  click and the note-off follows it.
+Two consequences of the click having an output of its own:
+
+- **It keeps channel 9.** For a MIDI port that is still General MIDI percussion;
+  for a plugin it is simply another channel, and the wood-block pitches produce
+  whatever the instrument has there. The click stays off any track's channel, so
+  it never inherits a program or a fader and never steals that channel's state.
+- **The chosen output has to be alive even when nothing else uses it**, which is
+  the normal case here rather than the odd one -- picking an instrument no track
+  points at is exactly what this setting is for. `RoutingOutput` therefore counts
+  it among its targets, so it gets started, told the sample rate, and added to
+  the mixer, while the click itself goes straight from the engine to the plugin
+  rather than through channel routing.
 
 ### 10.2 Does the selection live in the project or on the machine? -- decided
 

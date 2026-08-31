@@ -75,6 +75,16 @@ public:
     void set_selected_output(std::string id) { m_selected_output = std::move(id); }
 
     /**
+     * The output the metronome clicks through, chosen by the user.
+     *
+     * Empty means the default, which the facade resolves -- the preferences do
+     * not know what outputs exist, and a default written into the file would be
+     * a choice the user never made, indistinguishable from one they did.
+     */
+    [[nodiscard]] const std::string& metronome_output() const { return m_metronome_output; }
+    void set_metronome_output(std::string id) { m_metronome_output = std::move(id); }
+
+    /**
      * The parameters remembered for one output, by that output's id.
      *
      * Kept per output rather than globally because two outputs may both have a
@@ -111,6 +121,7 @@ public:
 private:
     std::filesystem::path m_path;
     std::string m_selected_output;
+    std::string m_metronome_output;
     std::map<std::string, std::map<std::string, playback::ParameterValue>> m_parameters;
     std::vector<std::string> m_clap_search_paths;
 };

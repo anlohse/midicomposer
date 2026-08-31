@@ -56,7 +56,23 @@ public:
     /** The output a channel's events would reach. */
     [[nodiscard]] OutputPlugin* target_for(uint8_t channel) const;
 
-    /** Every distinct output currently reachable, default included. */
+    /**
+     * Where the metronome clicks, for the sake of its lifecycle rather than its
+     * events.
+     *
+     * The click does not go through this layer -- the engine holds the plugin
+     * and sends to it directly, because a metronome has no channel to be routed
+     * by. But the output still has to be *started*, told the sample rate, and
+     * added to the mixer if it makes sound, and none of that happens for a
+     * plugin no track points at. A user choosing an instrument nothing else
+     * uses is the normal case here, not the odd one.
+     *
+     * Returns whether it moved.
+     */
+    bool set_metronome_target(OutputPlugin* target);
+
+    /** Every distinct output currently reachable, default and metronome
+        included. */
     [[nodiscard]] std::vector<OutputPlugin*> targets() const;
 
     // ── OutputPlugin ─────────────────────────────────────────────────────────
@@ -88,6 +104,7 @@ public:
 private:
     mutable std::mutex m_mutex;
     OutputPlugin* m_default{nullptr};
+    OutputPlugin* m_metronome{nullptr};
     std::array<OutputPlugin*, 16> m_routes{};
     AudioMixer m_mixer;
     int m_host_sample_rate{48000};

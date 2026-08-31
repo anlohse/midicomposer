@@ -146,6 +146,7 @@ void Preferences::from_json(const std::string& text) {
     }
 
     m_selected_output = parsed.value("selectedOutput", std::string{});
+    m_metronome_output = parsed.value("metronomeOutput", std::string{});
 
     m_parameters.clear();
     if (const auto it = parsed.find("outputParameters");
@@ -174,6 +175,7 @@ std::string Preferences::to_json() const {
     out[kApplicationKey] = kApplicationName;
     out["schemaVersion"] = kSchemaVersion;
     out["selectedOutput"] = m_selected_output;
+    out["metronomeOutput"] = m_metronome_output;
 
     auto parameters = nlohmann::json::object();
     for (const auto& [output_id, values] : m_parameters) {

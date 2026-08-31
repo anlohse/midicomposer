@@ -159,6 +159,10 @@ void CoreFacade::initialize() {
     // Last: the port a remembered output wants to open has to be opened after
     // the default one above, or the default would win by being later.
     restore_preferred_output();
+
+    // After discovery, so a plugin the click was pointed at has had its chance
+    // to appear before being declared gone.
+    apply_metronome_output();
 }
 
 std::string CoreFacade::get_version() const {
@@ -533,26 +537,10 @@ void CoreFacade::refresh_routes(const project::ProjectDocument& doc) {
         // falling silent with nothing to explain it.
     }
 
-    // The click follows the first track (§10.1). A metronome is not in the
-    // document, so it has no output of its own to name and no channel of its
-    // own to be routed by -- it borrows channel 9, which a percussion track may
-    // be using for real notes. Taking the first track's output means the click
-    // comes out of something the user can hear and has already configured,
-    // rather than out of whoever happens to own channel 9.
-    //
-    // The known cost: an instrument with nothing mapped near the wood-block
-    // keys clicks quietly or not at all. That is the trade §10.1 named, and it
-    // is visible -- a metronome you cannot hear is reported, unlike one playing
-    // out of a device you forgot was selected.
-    const auto& tracks = doc.composition().tracks();
-    playback::OutputPlugin* click = nullptr;
-    if (!tracks.empty()) {
-        click = routes[tracks.front().midi_channel() & 0x0F];
-        // An empty output_id means the track follows the project's, and so
-        // does the click. Null lets the engine fall back rather than making
-        // the facade name the same default twice.
-    }
-    m_playback_engine.set_metronome_output(click);
+    // Deliberately nothing about the metronome here. An earlier draft pointed
+    // the click at the first track's output, which meant rearranging tracks
+    // silently moved the metronome -- the click is a matter of taste, so it is
+    // the user's preference and nothing the document says can change it.
 
     // Rebuilt on every document change, so only a real move is worth acting on.
     if (m_routing.set_routes(routes)) {
@@ -740,6 +728,61 @@ base::Result<void> CoreFacade::set_clap_search_paths(std::vector<std::string> pa
     // or be named by a track in an open project, and recreating it would stop
     // its sound to no purpose.
     discover_clap_plugins();
+    return {};
+}
+
+std::string CoreFacade::metronome_output_id() const {
+    const auto& chosen = m_preferences.metronome_output();
+    if (!chosen.empty()) return chosen;
+    return std::string(m_system_output.id());
+}
+
+void CoreFacade::apply_metronome_output() {
+    playback::OutputPlugin* target = default_metronome_output();
+    const auto& chosen = m_preferences.metronome_output();
+    if (!chosen.empty()) {
+        // One list, held: outputs() builds a fresh vector each call, so
+        // iterating between two of them would be walking two different arrays.
+        const auto all = outputs();
+        target = nullptr;
+        for (auto* candidate : all) {
+            if (candidate->id() == chosen) { target = candidate; break; }
+        }
+        if (!target) {
+            // Reset rather than remembered. This is the opposite of what a
+            // missing *project* output does, and on purpose: an output you
+            // cannot hear a click through is one you would go and change
+            // anyway, so leaving a dead name in the file only means finding it
+            // still dead next time.
+            MC_LOG_WARN("Metronome output '{}' is gone; resetting to the default", chosen);
+            m_preferences.set_metronome_output({});
+            save_preferences();
+            target = default_metronome_output();
+        }
+    }
+
+    // Told to both: the engine sends the click, the routing layer owns the
+    // output's lifecycle. A plugin no track points at is started nowhere else.
+    m_playback_engine.set_metronome_output(target);
+    if (m_routing.set_metronome_target(target)) {
+        m_playback_engine.outputs_changed();
+        follow_output_audio();
+    }
+}
+
+base::Result<void> CoreFacade::set_metronome_output(const std::string& id) {
+    if (!id.empty()) {
+        const auto all = outputs();
+        const auto known = std::any_of(all.begin(), all.end(),
+                                       [&id](const auto* o) { return o->id() == id; });
+        if (!known) {
+            return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                               "No such output: " + id});
+        }
+    }
+    m_preferences.set_metronome_output(id);
+    save_preferences();
+    apply_metronome_output();
     return {};
 }
 

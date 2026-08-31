@@ -70,6 +70,8 @@ TEST_CASE("with nothing named, the click follows the ordinary routing") {
 }
 
 TEST_CASE("the click goes to the output it was given, not the default one") {
+    // §10.1: which output that is, is the user's preference. The engine only
+    // has to honour whatever it was handed.
     device::MidiService midi;
     testing::RecordingOutput ordinary;
     testing::RecordingOutput click_target;
@@ -81,8 +83,7 @@ TEST_CASE("the click goes to the output it was given, not the default one") {
     play_a_while(engine, doc);
 
     CHECK(clicks(click_target) > 0);
-    // The whole point (§10.1): a percussion track owning channel 9 must not be
-    // what decides where the metronome comes out.
+    // Not to the project's output, and not to whoever owns channel 9.
     CHECK(clicks(ordinary) == 0);
 }
 
@@ -116,8 +117,8 @@ TEST_CASE("moving the click mid-playback releases it on the output it leaves") {
     REQUIRE(engine.play(doc).has_value());
     std::this_thread::sleep_for(700ms);
 
-    // Routing changes whenever the document does, so this happens while the
-    // transport is running -- and a click may well be sounding right now.
+    // The user can change the preference while the transport is running, and a
+    // click may well be sounding at that moment.
     engine.set_metronome_output(&second);
     std::this_thread::sleep_for(700ms);
     engine.stop();
