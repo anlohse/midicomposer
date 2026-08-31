@@ -62,6 +62,9 @@ target_sources(midi_composer_core
         src/playback/output_plugin.hpp
         src/playback/routing_output.hpp
         src/playback/routing_output.cpp
+        src/playback/sample_bank.hpp
+        src/playback/spc700_output.hpp
+        src/playback/spc700_output.cpp
         src/playback/playback_engine.hpp
         src/playback/playback_engine.cpp
         src/playback/system_midi_output.hpp
@@ -238,6 +241,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/persistence_tests.cpp
         tests/playback_tests.cpp
         tests/preferences_tests.cpp
+        tests/spc700_tests.cpp
         tests/timeline_tests.cpp
         tests/ui_bundle_tests.cpp
     )
