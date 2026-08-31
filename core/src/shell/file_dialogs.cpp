@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include <shellapi.h>
 
 namespace midi_composer::shell {
 
@@ -133,6 +134,15 @@ std::wstring make_file_filter(const std::string& pattern) {
     return filter;
 }
 
+void reveal_folder(const std::string& utf8_path) {
+    if (utf8_path.empty()) return;
+    const auto wide = utf8_to_wide(utf8_path);
+    // Nothing is reported back: the request is "show me this", and a user who
+    // watches no window appear has already learned everything an error message
+    // would have told them.
+    ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 void show_error_dialog(const std::string& title, const std::string& message) {
     MessageBoxW(nullptr, utf8_to_wide(message).c_str(), utf8_to_wide(title).c_str(),
                 MB_OK | MB_ICONERROR);
@@ -149,6 +159,7 @@ namespace midi_composer::shell {
 std::optional<std::string> open_file_dialog(const wchar_t*) { return std::nullopt; }
 std::optional<std::string> save_file_dialog(const wchar_t*, const wchar_t*) { return std::nullopt; }
 std::optional<std::string> open_folder_dialog() { return std::nullopt; }
+void reveal_folder(const std::string&) {}
 
 std::wstring make_file_filter(const std::string&) {
     std::wstring filter = L"All Files (*.*)";

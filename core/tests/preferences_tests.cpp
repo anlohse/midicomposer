@@ -190,6 +190,60 @@ TEST_CASE("Saving with nowhere to save is an error, not a crash") {
     CHECK(result.error().code == base::ErrorCode::InvalidState);
 }
 
+TEST_CASE("The file says which application it belongs to") {
+    TempDir dir;
+    app::Preferences prefs;
+    prefs.load(dir.file());
+    REQUIRE(prefs.save().has_value());
+
+    // Not just valid JSON: recognisable. preferences.json is a name many
+    // programs use, so the file has to identify itself.
+    CHECK(read_all(dir.file()).find("\"application\": \"MIDI Composer\"") != std::string::npos);
+}
+
+TEST_CASE("Another application's file is not adopted as ours") {
+    TempDir dir;
+    write_all(dir.file(), R"({
+        "application": "Some Other DAW",
+        "schemaVersion": 1,
+        "selectedOutput": "their-output",
+        "clapSearchPaths": ["D:/Theirs"]
+    })");
+
+    app::Preferences prefs;
+    prefs.load(dir.file());
+
+    // Reading it would mean playing through a device chosen in another program,
+    // which is worse than starting from defaults.
+    CHECK(prefs.selected_output().empty());
+    CHECK(prefs.clap_search_paths().empty());
+}
+
+TEST_CASE("A file without the marker is still read, and gains one when saved") {
+    // The marker was added after the format was, so a file predating it may
+    // well be ours; discarding it would throw away settings to enforce a field
+    // that did not exist when they were written.
+    TempDir dir;
+    write_all(dir.file(), R"({"schemaVersion": 1, "selectedOutput": "internal-synth"})");
+
+    app::Preferences prefs;
+    prefs.load(dir.file());
+    CHECK(prefs.selected_output() == "internal-synth");
+
+    REQUIRE(prefs.save().has_value());
+    CHECK(read_all(dir.file()).find("MIDI Composer") != std::string::npos);
+}
+
+TEST_CASE("The application owns a plugin folder of its own") {
+    const auto folder = app::Preferences::plugin_folder();
+    if (!folder.empty()) {
+        // Separate from the preferences file: these are native binaries, and a
+        // roaming profile would carry one machine's build onto another.
+        CHECK(folder != app::Preferences::default_path().parent_path());
+        CHECK(folder.has_parent_path());
+    }
+}
+
 TEST_CASE("The default location is under the user's profile") {
     const auto path = app::Preferences::default_path();
     // Empty is allowed -- a platform that will not say where means the

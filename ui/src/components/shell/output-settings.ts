@@ -35,6 +35,9 @@ export interface OutputChoice { id: string; name: string }
 export interface Preferences {
     selectedOutput: string;
     clapSearchPaths: string[];
+    /** The application's own folder. Always scanned and never removable, so it
+        is listed apart from the ones the user added. */
+    pluginFolder: string;
 }
 
 export interface OutputInfo {
@@ -71,6 +74,7 @@ export class OutputSettings extends LitElement {
     @state() private info: OutputInfo | null = null;
     @state() private error: string | null = null;
     @state() private folders: string[] = [];
+    @state() private pluginFolder = '';
 
     static styles = css`
         .modal-overlay {
@@ -132,6 +136,8 @@ export class OutputSettings extends LitElement {
         button.link:hover { background: none; color: #f48771; }
         button.secondary { background: #3c3c3c; }
         button.inline { padding: 3px 8px; font-size: 0.8rem; white-space: nowrap; }
+        .folder .path.own { color: #ccc; }
+        .hint.own-hint { margin: 0 0 10px 0; }
         button.secondary:hover { background: #4a4a4a; }
         .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
         button {
@@ -151,6 +157,7 @@ export class OutputSettings extends LitElement {
         try {
             const prefs = await CoreBridge.sendCommand<Preferences>('get_preferences');
             this.folders = prefs?.clapSearchPaths ?? [];
+            this.pluginFolder = prefs?.pluginFolder ?? '';
         } catch (err) {
             // The dialog still configures the output without them; only the
             // folder list is missing, so it says so there rather than here.
@@ -176,6 +183,14 @@ export class OutputSettings extends LitElement {
         if (!chosen?.path) return;
         if (this.folders.includes(chosen.path)) return;
         await this.setFolders([...this.folders, chosen.path]);
+    }
+
+    private async revealFolder(path: string) {
+        try {
+            await CoreBridge.sendCommand('reveal_folder', { path });
+        } catch (err) {
+            this.error = err instanceof Error ? err.message : String(err);
+        }
     }
 
     private async removeFolder(path: string) {
@@ -312,6 +327,20 @@ export class OutputSettings extends LitElement {
                             straight away; one removed keeps its plugins until
                             the next run.
                         </div>
+                        ${this.pluginFolder ? html`
+                            <div class="folder">
+                                <span class="path own" title=${this.pluginFolder}>
+                                    ${this.pluginFolder}
+                                </span>
+                                <button class="secondary inline"
+                                        @click=${() => this.revealFolder(this.pluginFolder)}>
+                                    Open
+                                </button>
+                            </div>
+                            <div class="hint own-hint">
+                                This one is ours — drop a plugin in it and it is
+                                found next time. It cannot be removed.
+                            </div>` : ''}
                         ${this.folders.map(path => html`
                             <div class="folder">
                                 <span class="path" title=${path}>${path}</span>

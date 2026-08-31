@@ -24,6 +24,11 @@ std::optional<std::string> open_folder_dialog();
 // one that shows too much.
 std::wstring make_file_filter(const std::string& pattern);
 
+// Shows a folder in the system's file manager. What makes "paste your plugins
+// in this folder" an instruction someone can follow: a path printed in a dialog
+// is something to retype, a folder that opens is somewhere to drop a file.
+void reveal_folder(const std::string& utf8_path);
+
 // Reports a failure that stops the app from starting. Startup errors happen
 // before there is a window to show them in, and a user who double-clicked the
 // executable would otherwise see nothing at all.

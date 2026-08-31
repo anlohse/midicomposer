@@ -2,6 +2,7 @@
 #include "base/logger.hpp"
 #include "shell/file_dialogs.hpp"
 #include "playback/output_plugin.hpp"
+#include "app/preferences.hpp"
 
 #include <variant>
 
@@ -475,6 +476,11 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             nlohmann::json result;
             result["selectedOutput"] = prefs.selected_output();
             result["clapSearchPaths"] = prefs.clap_search_paths();
+            // Reported separately from the list above because it is not one of
+            // them: it is always scanned and cannot be removed.
+            const auto own = midi_composer::app::Preferences::plugin_folder().u8string();
+            result["pluginFolder"] =
+                std::string(reinterpret_cast<const char*>(own.c_str()), own.size());
             response["result"] = result;
         } else if (type == "set_clap_search_paths") {
             std::vector<std::string> paths;
@@ -492,6 +498,8 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto chosen = shell::open_file_dialog(filter.c_str());
             if (!chosen) { response["result"] = {{"cancelled", true}}; }
             else { response["result"] = {{"path", *chosen}}; }
+        } else if (type == "reveal_folder") {
+            shell::reveal_folder(payload.at("path").get<std::string>());
         } else if (type == "choose_folder") {
             // The core opens it, like every other path the core is given: a
             // browser has no folder picker, and one typed by hand is a typo

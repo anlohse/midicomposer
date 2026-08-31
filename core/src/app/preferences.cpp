@@ -16,6 +16,15 @@ namespace {
 // most additions need no bump at all.
 constexpr int kSchemaVersion = 1;
 
+// What makes the file recognisable as ours rather than merely as valid JSON.
+// preferences.json is a name a dozen programs use, and the path it sits at is
+// not proof of anything: a sync tool, a backup restore or a hand edit can put
+// somebody else's file there. Without this, such a file would be read as a
+// MIDI Composer file with every field missing -- which parses cleanly and is
+// indistinguishable from a first run.
+constexpr const char* kApplicationKey = "application";
+constexpr const char* kApplicationName = "MIDI Composer";
+
 std::string env(const char* name) {
 #ifdef _WIN32
     char* value = nullptr;
@@ -75,6 +84,20 @@ std::filesystem::path Preferences::default_path() {
 #endif
 }
 
+std::filesystem::path Preferences::plugin_folder() {
+#ifdef _WIN32
+    const auto local = env("LOCALAPPDATA");
+    if (local.empty()) return {};
+    return to_path(local) / "MIDI Composer" / "Plugins";
+#else
+    const auto data = env("XDG_DATA_HOME");
+    if (!data.empty()) return to_path(data) / "midi-composer" / "plugins";
+    const auto home = env("HOME");
+    if (home.empty()) return {};
+    return to_path(home) / ".local" / "share" / "midi-composer" / "plugins";
+#endif
+}
+
 void Preferences::load(const std::filesystem::path& path) {
     m_path = path;
     if (m_path.empty()) return;
@@ -103,6 +126,17 @@ void Preferences::from_json(const std::string& text) {
         MC_LOG_WARN("Preferences are not valid JSON; using defaults");
         return;
     }
+    // Absent is accepted and rewritten on the next save: the marker was added
+    // after the file was, so a file without one may well be ours. A marker that
+    // is present and says something else is somebody else's file, and reading
+    // it would mean adopting their settings as ours.
+    if (const auto it = parsed.find(kApplicationKey); it != parsed.end()) {
+        if (!it->is_string() || it->get<std::string>() != kApplicationName) {
+            MC_LOG_WARN("Preferences belong to another application; using defaults");
+            return;
+        }
+    }
+
     if (parsed.value("schemaVersion", kSchemaVersion) > kSchemaVersion) {
         // Written by a newer build. Reading it would mean guessing at fields
         // this one does not know, and guessing wrong then saves the guess back
@@ -137,6 +171,7 @@ void Preferences::from_json(const std::string& text) {
 
 std::string Preferences::to_json() const {
     nlohmann::json out;
+    out[kApplicationKey] = kApplicationName;
     out["schemaVersion"] = kSchemaVersion;
     out["selectedOutput"] = m_selected_output;
 

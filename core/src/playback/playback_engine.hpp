@@ -172,6 +172,19 @@ public:
     void set_metronome_enabled(bool enabled) { m_metronome_enabled = enabled; }
     [[nodiscard]] bool is_metronome_enabled() const { return m_metronome_enabled; }
 
+    /**
+     * Where the click goes, when that is not simply where everything goes.
+     *
+     * The metronome is not in the document, so it has no channel of its own to
+     * be routed by -- it borrows channel 9, which a percussion track may well
+     * be using for real notes. Naming the output directly is what keeps "where
+     * the click goes" from being decided by whoever happens to own channel 9.
+     *
+     * Null means the click follows the ordinary routing, which is the right
+     * answer when there is no track to take it from.
+     */
+    void set_metronome_output(OutputPlugin* output);
+
 private:
     void thread_proc();
     void handle_incoming_midi(const std::vector<unsigned char>& message, double timestamp);
@@ -192,8 +205,15 @@ private:
     // scheduled from a slice interpolate it (due_us_locked), everything else --
     // the state restored on a seek, a fader moving, notes silenced on stop --
     // is genuinely immediate and passes now.
-    void send_note_on(uint8_t channel, uint8_t pitch, uint8_t velocity, int64_t when_us);
-    void send_note_off(uint8_t channel, uint8_t pitch, int64_t when_us);
+    // `metronome` picks the output rather than describing the note: a click is
+    // an ordinary note_on as far as any plugin is concerned.
+    void send_note_on(uint8_t channel, uint8_t pitch, uint8_t velocity, int64_t when_us,
+                      bool metronome = false);
+    void send_note_off(uint8_t channel, uint8_t pitch, int64_t when_us,
+                       bool metronome = false);
+
+    // Whichever output a click should reach. Requires the lock.
+    [[nodiscard]] OutputPlugin* metronome_output_locked() const;
     void send_program_change(uint8_t channel, uint8_t program, int64_t when_us);
     void send_controller(uint8_t channel, uint8_t controller, uint8_t value, int64_t when_us);
     void send_pitch_bend(uint8_t channel, int16_t value, int64_t when_us);
@@ -233,6 +253,8 @@ private:
     std::atomic<TransportState> m_state{TransportState::Stopped};
     std::atomic<int64_t> m_current_tick{0};
     std::atomic<bool> m_metronome_enabled{false};
+    // Guarded by the same lock as the rest of the dispatch state.
+    OutputPlugin* m_metronome_output{nullptr};
 
     // ── Guarded by m_state_mutex ─────────────────────────────────────────────
     // Snapshot of the playing document plus transient playback state. All of
@@ -279,6 +301,9 @@ private:
         uint8_t channel;
         uint8_t pitch;
         int64_t end_tick;
+        // A click has to be turned off through the same output it was turned on
+        // through, and by then the routing may have moved.
+        bool    metronome{false};
     };
     std::vector<PlayingNote> m_playing_notes;
 

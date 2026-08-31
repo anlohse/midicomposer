@@ -48,6 +48,22 @@ public:
      */
     [[nodiscard]] static std::filesystem::path default_path();
 
+    /**
+     * The folder this installation owns for plugins dropped in by hand.
+     *
+     * Always scanned, never listed as a removable search path, and created at
+     * startup so it exists to be pasted into. Somewhere to put a plugin has to
+     * exist before the user is asked to put one somewhere -- "add the folder
+     * you downloaded it to" only works for someone who already understands
+     * that plugins live in folders.
+     *
+     * Local rather than roaming, unlike the preferences beside it: these are
+     * native binaries, and syncing them between machines would carry a build
+     * for one architecture onto another and count against a roaming quota
+     * besides.
+     */
+    [[nodiscard]] static std::filesystem::path plugin_folder();
+
     /** Read a file if there is one. Absent or unparseable is not an error. */
     void load(const std::filesystem::path& path);
 
