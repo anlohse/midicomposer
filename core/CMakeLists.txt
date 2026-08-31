@@ -50,6 +50,8 @@ target_sources(midi_composer_core
         src/device/midi_service.cpp
         src/edit/edit_service.hpp
         src/edit/edit_service.cpp
+        src/playback/audio_mixer.hpp
+        src/playback/audio_mixer.cpp
         src/playback/clap_instance.hpp
         src/playback/clap_library.hpp
         src/playback/clap_library.cpp

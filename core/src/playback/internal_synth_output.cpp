@@ -206,7 +206,7 @@ double InternalSynthOutput::rate_for(uint8_t pitch, float bend) const {
     // A rate rather than a frequency, the way the DSP addresses a sample: how
     // many wavetable samples to advance per output frame.
     const float hz = midi_to_hz(static_cast<double>(pitch) + bend);
-    return static_cast<double>(hz) * kWaveLength / kSampleRate;
+    return static_cast<double>(hz) * kWaveLength / m_sample_rate;
 }
 
 void InternalSynthOutput::reset_voices() {
@@ -333,9 +333,9 @@ void InternalSynthOutput::render(float* interleaved, int frames) {
     // Real time from here down. No locks, no allocation: the queue is popped
     // without taking anything, the wavetables were built at construction, and
     // the voices belong to this thread.
-    const double us_per_frame = 1'000'000.0 / kSampleRate;
-    const float attack  = 1.0f / (kAttackSeconds * kSampleRate);
-    const float release = 1.0f / (kReleaseSeconds * kSampleRate);
+    const double us_per_frame = 1'000'000.0 / m_sample_rate;
+    const float attack  = 1.0f / (kAttackSeconds * m_sample_rate);
+    const float release = 1.0f / (kReleaseSeconds * m_sample_rate);
 
     for (int i = 0; i < frames; ++i) {
         const int64_t frame_us = m_now_us + static_cast<int64_t>(i * us_per_frame);
@@ -388,7 +388,7 @@ void InternalSynthOutput::render(float* interleaved, int frames) {
 
 int InternalSynthOutput::tail_frames() const {
     // Long enough for a release to finish, or a rendered file ends on a click.
-    return static_cast<int>(kReleaseSeconds * kSampleRate) + kSampleRate / 10;
+    return static_cast<int>(kReleaseSeconds * m_sample_rate) + m_sample_rate / 10;
 }
 
 } // namespace midi_composer::playback

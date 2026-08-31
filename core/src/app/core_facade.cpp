@@ -111,6 +111,13 @@ const mc::music::Track* find_track_const(const mc::music::Composition& comp, mc:
 
 namespace midi_composer::app {
 
+namespace {
+// The rate every output that makes sound is rendered at. A plugin cannot pick
+// one when several share a device, so the host does.
+constexpr int kHostSampleRate = 48000;
+}
+
+
 CoreFacade::CoreFacade() : m_playback_engine(m_midi_service, m_routing) {
     m_routing.set_default_target(&m_system_output);
     MC_LOG_INFO("CoreFacade initialized");
@@ -139,6 +146,10 @@ void CoreFacade::initialize() {
     // application with it. A real host scans out of process; this one does not
     // yet, which is worth knowing before pointing it at a folder of unknowns.
     discover_clap_plugins();
+
+    // One rate for everything that makes sound: they share a device, so the
+    // host decides and tells them before anything is activated (§9a.5).
+    m_routing.set_host_sample_rate(kHostSampleRate);
 }
 
 std::string CoreFacade::get_version() const {
@@ -555,10 +566,6 @@ std::vector<playback::OutputPlugin*> CoreFacade::outputs() {
 }
 
 void CoreFacade::discover_clap_plugins() {
-    // The rate every hosted plugin is activated at. The host decides and tells
-    // them (§9a.5); a plugin cannot pick one when several share a device.
-    constexpr int kHostSampleRate = 48000;
-
     for (const auto& file : playback::ClapLibrary::find_plugin_files()) {
         auto library = playback::ClapLibrary::open(file);
         if (!library) {

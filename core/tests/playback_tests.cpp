@@ -940,7 +940,7 @@ TEST_CASE("starting reaches every reachable output, not just the default") {
     CHECK(b.starts() == 1);
 }
 
-TEST_CASE("one output refusing to start refuses the whole transport") {
+TEST_CASE("one output failing does not silence the ones that work") {
     testing::RecordingOutput a, b;
     b.fail_to_start({base::ErrorCode::NotFound, "no sample bank loaded"});
 
@@ -950,10 +950,22 @@ TEST_CASE("one output refusing to start refuses the whole transport") {
     routes[3] = &b;
     routing.set_routes(routes);
 
+    // Refusing everything here left a piece with every track routed elsewhere
+    // silent because a MIDI port nothing played through was missing.
+    CHECK(routing.start().has_value());
+    CHECK(a.starts() == 1);
+}
+
+TEST_CASE("nothing able to start is refused, by name") {
+    testing::RecordingOutput only;
+    only.fail_to_start({base::ErrorCode::NotFound, "no sample bank loaded"});
+
+    playback::RoutingOutput routing;
+    routing.set_default_target(&only);
+
     const auto started = routing.start();
     REQUIRE_FALSE(started.has_value());
-    // Named: with several outputs, the one that failed may not be the one the
-    // user was listening to.
+    // With several outputs, "no port is open" does not say whose.
     CHECK(started.error().message == "Recording: no sample bank loaded");
 }
 
@@ -971,25 +983,26 @@ TEST_CASE("a failure on any routed output is reported") {
     CHECK(routing.failure()->message == "device went away");
 }
 
-TEST_CASE("audio is offered only while exactly one output makes it") {
+TEST_CASE("audio is offered whenever anything makes it") {
     testing::RecordingOutput midi;          // makes none
     playback::InternalSynthOutput synth_a;
     playback::InternalSynthOutput synth_b;
 
     playback::RoutingOutput routing;
     routing.set_default_target(&midi);
+    // Nothing makes sound, so there is no reason to open a device.
     CHECK(routing.audio() == nullptr);
 
     std::array<playback::OutputPlugin*, 16> routes{};
     routes[0] = &synth_a;
     routing.set_routes(routes);
-    CHECK(routing.audio() == synth_a.audio());
+    CHECK(routing.audio() != nullptr);
 
-    // Two sources need summing, and there is no bus. Answering with one of them
-    // would silently drop the other, so the honest answer is none.
+    // Two sources used to answer null, on the grounds that picking one would
+    // drop the other. There is a bus now, so both are heard.
     routes[1] = &synth_b;
     routing.set_routes(routes);
-    CHECK(routing.audio() == nullptr);
+    CHECK(routing.audio() != nullptr);
 }
 
 TEST_CASE("a routed track plays through its own output end to end") {
@@ -1012,4 +1025,138 @@ TEST_CASE("a routed track plays through its own output end to end") {
     REQUIRE(rendered.has_value());
     CHECK(peak(rendered->interleaved_stereo, 0, 20000) > 0.01f);
     CHECK(fallback.events().empty());
+}
+
+// ─── Two instruments at once ─────────────────────────────────────────────────
+
+TEST_CASE("two audio outputs are summed rather than one being dropped") {
+    playback::InternalSynthOutput a;
+    playback::InternalSynthOutput b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[1] = &b;
+    routing.set_routes(routes);
+    routing.set_host_sample_rate(48000);
+
+    // This used to answer null, which left both silent: routing one track to
+    // the internal synth and another to a plugin is the first thing anyone
+    // tries once plugins work.
+    auto* mixed = routing.audio();
+    REQUIRE(mixed != nullptr);
+    CHECK(mixed->sample_rate() == 48000);
+
+    REQUIRE(routing.start().has_value());
+    routing.note_on(0, 60, 100, 0);
+    routing.note_on(1, 67, 100, 0);
+
+    std::vector<float> out(256 * 2, 0.0f);
+    mixed->begin_block(0);
+    mixed->render(out.data(), 256);
+
+    float peak = 0.0f;
+    for (float s : out) peak = std::max(peak, std::abs(s));
+    CHECK(peak > 0.0f);
+}
+
+TEST_CASE("a single audio output still reaches the device") {
+    playback::InternalSynthOutput synth;
+    testing::RecordingOutput midi;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&midi);
+
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[0] = &synth;
+    routing.set_routes(routes);
+    routing.set_host_sample_rate(48000);
+
+    REQUIRE(routing.audio() != nullptr);
+    CHECK(routing.audio()->sample_rate() == 48000);
+}
+
+TEST_CASE("an output that makes no sound contributes nothing to ask for") {
+    testing::RecordingOutput midi;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&midi);
+    routing.set_host_sample_rate(48000);
+
+    // Null only when nothing makes sound, which is what decides whether the
+    // application opens an audio device at all.
+    CHECK(routing.audio() == nullptr);
+}
+
+TEST_CASE("the host's rate reaches the synth, whatever the chip's was") {
+    playback::InternalSynthOutput synth;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&synth);
+
+    CHECK(synth.sample_rate() == 32000);   // the chip's, as a default
+    routing.set_host_sample_rate(44100);
+    CHECK(synth.sample_rate() == 44100);
+}
+
+TEST_CASE("adding a second instrument does not make the first quieter") {
+    playback::InternalSynthOutput a;
+    playback::InternalSynthOutput b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+    routing.set_host_sample_rate(48000);
+    REQUIRE(routing.start().has_value());
+
+    std::vector<float> alone(256 * 2, 0.0f);
+    routing.note_on(0, 60, 100, 0);
+    routing.audio()->begin_block(0);
+    routing.audio()->render(alone.data(), 256);
+    float peak_alone = 0.0f;
+    for (float s : alone) peak_alone = std::max(peak_alone, std::abs(s));
+    REQUIRE(peak_alone > 0.0f);
+
+    // Summed, not averaged: dividing by the number of sources would turn
+    // adding an instrument into turning the others down.
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[1] = &b;
+    routing.set_routes(routes);
+    std::vector<float> together(256 * 2, 0.0f);
+    routing.audio()->begin_block(10'000);
+    routing.audio()->render(together.data(), 256);
+    float peak_together = 0.0f;
+    for (float s : together) peak_together = std::max(peak_together, std::abs(s));
+    CHECK(peak_together >= peak_alone * 0.9f);
+}
+
+TEST_CASE("rendering offline through the mixer terminates") {
+    device::MidiService midi;
+    playback::InternalSynthOutput a;
+    playback::InternalSynthOutput b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[1] = &b;
+    routing.set_routes(routes);
+    routing.set_host_sample_rate(48000);
+
+    playback::PlaybackEngine engine{midi, routing};
+    auto doc = make_document({{0, kPpqn}});
+    const auto rendered = engine.render_offline(doc);
+
+    REQUIRE(rendered.has_value());
+    CHECK(rendered->sample_rate == 48000);
+    CHECK_FALSE(rendered->interleaved_stereo.empty());
+}
+
+TEST_CASE("an error names the output the user chose, not the layer") {
+    testing::RecordingOutput midi;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&midi);
+
+    device::MidiService input;
+    playback::PlaybackEngine engine{input, routing};
+    auto doc = make_document({{0, kPpqn}});
+    const auto rendered = engine.render_offline(doc);
+
+    REQUIRE_FALSE(rendered.has_value());
+    // "does not produce audio (Routing)" named something nobody has heard of.
+    CHECK(rendered.error().message.find("Recording") != std::string::npos);
+    CHECK(rendered.error().message.find("Routing") == std::string::npos);
 }

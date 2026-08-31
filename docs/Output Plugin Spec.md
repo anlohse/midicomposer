@@ -430,6 +430,29 @@ where output settings live.
 - What happens to a track whose output is missing when the project opens — the
   §8 failure path, but now per track rather than once.
 
+## 9b. A known defect in the bridge
+
+Any string a command carries loses its backslashes on the way to the core.
+`C:\Users\alanl` arrives as `C:Usersalanl`: `\U` is not a valid JSON escape and
+the backslash is dropped, while `\b` and `\t` are valid and become a backspace
+and a tab. It is not specific to paths -- a track name containing a backslash is
+corrupted the same way.
+
+Reproduced with a probe rather than inferred: `set_track_output` echoes the id
+it received back in its error, which makes it a mirror for what the transport
+does to a string.
+
+It does not affect the application today, which is why it went unnoticed: every
+path the core opens comes from a native file dialog the core itself opened, so
+no path is ever sent from the UI. It shows up only when a command is given a
+path directly, which is what an automated test does.
+
+Escaping backslashes once more in the UI before handing the JSON to the
+transport was tried and did **not** fix it, so the cause is not simply one
+unescape too many and the description above is incomplete. That attempt was
+reverted: a workaround that does not work is worse than a defect that is
+written down.
+
 ## 10. Open decisions
 
 ### 10.1 Does the metronome go through the plugin?
