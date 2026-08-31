@@ -9,6 +9,7 @@
 #include "playback/clap_library.hpp"
 #include "playback/routing_output.hpp"
 #include "playback/system_midi_output.hpp"
+#include "preferences.hpp"
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -134,6 +135,28 @@ public:
     /** Everything that can be selected, in the order it is offered. */
     [[nodiscard]] std::vector<playback::OutputPlugin*> outputs();
     base::Result<void> select_output(std::string_view id);
+
+    /**
+     * Change a setting on the selected output and remember it.
+     *
+     * Goes through the facade rather than straight to the plugin because the
+     * remembering is the point: a port chosen once should still be chosen
+     * tomorrow, and the plugin has no idea a preferences file exists.
+     */
+    base::Result<void> set_output_parameter(const std::string& name,
+                                            const playback::ParameterValue& value);
+
+    /** What this installation remembers between runs. */
+    [[nodiscard]] const Preferences& preferences() const { return m_preferences; }
+
+    /**
+     * Replace the folders scanned for `.clap` files, and rescan.
+     *
+     * A rescan can only add: plugins already found stay, because one of them
+     * may be the selected output or be named by a track, and dropping it would
+     * silence a project to tidy up a list.
+     */
+    base::Result<void> set_clap_search_paths(std::vector<std::string> paths);
     /** Point one track at an output, or pass an empty id to follow the
         project's. */
     base::Result<void> set_track_output(base::CompositionId doc_id, base::TrackId track_id,
@@ -186,9 +209,22 @@ private:
     std::vector<std::shared_ptr<playback::ClapLibrary>> m_clap_libraries;
     std::vector<std::unique_ptr<playback::ClapInstance>> m_clap_outputs;
 
-    // Opens whatever CLAP plugins are installed. Failures are logged, never
-    // fatal: a plugin that will not load should cost you that plugin.
+    // Opens whatever CLAP plugins are installed, in the standard folders plus
+    // whatever the preferences add. Failures are logged, never fatal: a plugin
+    // that will not load should cost you that plugin.
     void discover_clap_plugins();
+
+    // What this installation remembers. Declared after the outputs it names, so
+    // nothing is restored onto an output that no longer exists.
+    Preferences m_preferences;
+
+    // Applies the remembered output and its parameters, after discovery has
+    // decided which outputs there are to apply them to.
+    void restore_preferred_output();
+
+    // Best-effort: preferences failing to save must not fail the command that
+    // changed them, because the change itself worked.
+    void save_preferences();
     device::AudioDevice          m_audio_device;
 
     // Rebuilds the channel routes from a document's tracks.

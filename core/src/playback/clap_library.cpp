@@ -146,7 +146,7 @@ base::Result<std::unique_ptr<ClapInstance>> ClapLibrary::create(const std::strin
     return instance;
 }
 
-std::vector<std::string> ClapLibrary::search_paths() {
+std::vector<std::string> ClapLibrary::search_paths(const std::vector<std::string>& extra) {
     std::vector<std::string> paths;
 
     // Where a plugin is normally installed on this platform.
@@ -158,21 +158,27 @@ std::vector<std::string> ClapLibrary::search_paths() {
     }
 
     // And the specification's own escape hatch, semicolon separated here.
-    const std::string extra = env("CLAP_PATH");
+    const std::string clap_path = env("CLAP_PATH");
     size_t start = 0;
-    while (start < extra.size()) {
-        const size_t sep = extra.find(';', start);
-        auto piece = extra.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
+    while (start < clap_path.size()) {
+        const size_t sep = clap_path.find(';', start);
+        auto piece = clap_path.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
         if (!piece.empty()) paths.push_back(piece);
         if (sep == std::string::npos) break;
         start = sep + 1;
     }
+
+    // Last, so a folder the user added cannot hide a plugin that is properly
+    // installed: the first file wins when the same plugin is found twice.
+    for (const auto& dir : extra) {
+        if (!dir.empty()) paths.push_back(dir);
+    }
     return paths;
 }
 
-std::vector<std::string> ClapLibrary::find_plugin_files() {
+std::vector<std::string> ClapLibrary::find_plugin_files(const std::vector<std::string>& extra) {
     std::vector<std::string> files;
-    for (const auto& dir : search_paths()) {
+    for (const auto& dir : search_paths(extra)) {
         std::error_code ec;
         const auto root = to_path(dir);
         if (!std::filesystem::is_directory(root, ec)) continue;

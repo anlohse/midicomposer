@@ -45,14 +45,19 @@ public:
 
     /**
      * Every `.clap` found in the places a plugin is normally installed, plus
-     * whatever CLAP_PATH names.
+     * whatever CLAP_PATH names, plus whatever the caller adds.
      *
-     * CLAP_PATH is the specification's own escape hatch, which is what makes it
-     * the right way to point at a plugin that is not installed -- a setting of
-     * our own would be a second answer to a question that already has one.
+     * CLAP_PATH is the specification's own escape hatch, and for a long time
+     * that was the whole answer here: a setting of our own would be a second
+     * answer to a settled question. What it cannot be is *changed*. It has to
+     * be exported before launch, so a user who downloads a plugin into a folder
+     * of their own has no way to point a running application at it. `extra` is
+     * where the preferences file puts that folder. Both are read.
      */
-    [[nodiscard]] static std::vector<std::string> search_paths();
-    [[nodiscard]] static std::vector<std::string> find_plugin_files();
+    [[nodiscard]] static std::vector<std::string> search_paths(
+        const std::vector<std::string>& extra = {});
+    [[nodiscard]] static std::vector<std::string> find_plugin_files(
+        const std::vector<std::string>& extra = {});
 
 private:
     ClapLibrary() = default;

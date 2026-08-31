@@ -430,28 +430,29 @@ where output settings live.
 - What happens to a track whose output is missing when the project opens — the
   §8 failure path, but now per track rather than once.
 
-## 9b. A known defect in the bridge
+## 9b. A bridge defect that was not one
 
-Any string a command carries loses its backslashes on the way to the core.
-`C:\Users\alanl` arrives as `C:Usersalanl`: `\U` is not a valid JSON escape and
-the backslash is dropped, while `\b` and `\t` are valid and become a backspace
-and a tab. It is not specific to paths -- a track name containing a backslash is
-corrupted the same way.
+Recorded here because it was written up as real and acted on, and the retraction
+belongs next to the claim.
 
-Reproduced with a probe rather than inferred: `set_track_output` echoes the id
-it received back in its error, which makes it a mirror for what the transport
-does to a string.
+The bridge was said to lose backslashes from any string a command carries --
+`C:\Users\alanl` arriving as `C:Usersalanl`. It does not. The transport is
+lossless: JSON.stringify on the page, one JSON string through `postMessage`,
+`TryGetWebMessageAsString` on the other side, glaze into the exposed function.
+There is no step that could unescape twice.
 
-It does not affect the application today, which is why it went unnoticed: every
-path the core opens comes from a native file dialog the core itself opened, so
-no path is ever sent from the UI. It shows up only when a command is given a
-path directly, which is what an automated test does.
+What actually happened is that the probe was driven over CDP, and the probe's
+own JavaScript went through a template literal on the way. That literal ate one
+level of escaping before the string ever reached the page, so the corruption was
+measured on the way *into* the measurement.
 
-Escaping backslashes once more in the UI before handing the JSON to the
-transport was tried and did **not** fix it, so the cause is not simply one
-unescape too many and the description above is incomplete. That attempt was
-reverted: a workaround that does not work is worse than a defect that is
-written down.
+Verified by building the backslash from `String.fromCharCode(92)`, where no
+layer can eat an escape: `select_output` echoed `C:\Users\alanl\Desktop`
+back intact, and `export_audio` wrote byte-identical files given the same
+directory with `\` and with `/`.
+
+The lesson is about the harness, not the bridge: a probe that has to escape its
+own payload is measuring itself as much as its subject.
 
 ## 10. Open decisions
 
@@ -469,25 +470,72 @@ selected output.
 This decides whether `OutputPlugin` is *the* output or *the musical* output. No
 recommendation; it needs a call.
 
-### 10.2 Does the selection live in the project or on the machine?
+### 10.2 Does the selection live in the project or on the machine? -- decided
 
-Saving it in the project means opening someone else's project changes your output
-device, and a MIDI port is a property of your machine, not of the composition.
-But the SPC's sample bank defines **how the piece sounds**, which is clearly the
-composition's. The plugin being device and instrument at once is what blurs this.
+**Both, split by what the thing actually is.** The machine keeps the device; the
+project keeps the instrument.
 
-Leaning towards the project, for two reasons:
+The question was hard only because a plugin is device and instrument at once. It
+stops being hard once a *track* can name its own output (§9a), because that is
+the instrument half and it is already saved in the project. What is left over --
+which output a fresh project plays through, and how that output is configured --
+is the device half, and a MIDI port is a property of the computer it is plugged
+into. Opening someone else's project must not repoint your sound at hardware
+they happen to own.
 
-- The application has **no preferences store at all** today. Everything lives in
-  the document. Choosing "machine setting" means inventing a settings file, with a
-  location, a format and migration — a real cost that does not exist yet.
-- The failure mode is already designed. A port that does not exist on the other
-  machine is exactly §8's "port 'X' not found", with the plugin falling back to a
-  default and saying so.
+So the project-storage lean recorded above is reversed for the selection, and
+the reason it was recorded is gone with it: "the application has no preferences
+store at all" was the honest objection, and building one was the answer. It is
+`app::Preferences`, at `%APPDATA%\MIDI Composer\preferences.json`, holding:
 
-Written up as project storage in §6, but flagged here because it is visible to
-the user and should be a decision rather than something that emerges from the
-code.
+- `selectedOutput` -- the output a new project plays through.
+- `outputParameters` -- keyed by output id, because two outputs may both have a
+  "port" and they are not the same port. Read back from the plugin after a set
+  rather than stored as given: a plugin is entitled to normalise what it was
+  handed, and remembering the request instead of the result would restore
+  something the plugin already declined to be.
+- `clapSearchPaths` -- see §10.3.
+
+Three rules the implementation follows, each of which is a way of not making
+preferences more important than they are:
+
+- **Reading is best-effort.** Missing, unreadable, corrupt, or written by a
+  newer build: the defaults stay and the application starts. Preferences save
+  the user a few clicks, and losing them must never cost more than those clicks.
+- **Writing is atomic.** A temporary file beside the real one, then a rename.
+  That is what stops a crash halfway through a save from turning "a few clicks"
+  into a file that will not parse again.
+- **A setting that no longer applies costs only itself.** A remembered output
+  that is gone leaves the default playing and is *not* erased from the file --
+  plugging the interface back in should bring the choice back with it. A
+  parameter that will not apply is logged and skipped.
+
+### 10.3 Where plugins are looked for
+
+`ClapLibrary` scanned the standard install folders plus `CLAP_PATH`, and this
+document argued that a setting of our own would be a second answer to a settled
+question. That held while there was nowhere to put the setting.
+
+What `CLAP_PATH` cannot be is *changed*. It has to be exported before launch, so
+a user who downloads a plugin into a folder of their own cannot point a running
+application at it -- and downloading a plugin into a folder of your own is the
+normal way to try one. `clapSearchPaths` is where that folder goes. Both are
+read; neither replaces the other, and the extra folders are scanned last so one
+of them cannot hide a properly installed plugin.
+
+Adding a folder rescans immediately, and only for files not already open:
+creating a second instance of a plugin that is currently playing would be a new
+output with the same name and none of the sound. Removing a folder does *not*
+unload what came from it, because that would silence a project to tidy up a
+list; it takes effect on the next run.
+
+### 10.4 Still open
+
+The metronome question (§10.1) is unaffected by any of this and is still a call
+to make. Two things this file could reasonably hold and deliberately does not
+yet: whether the metronome is on, and the window's size and position. Neither
+was needed to answer §10.2, and a preferences file grows best one answered
+question at a time.
 
 ## 11. Staging
 

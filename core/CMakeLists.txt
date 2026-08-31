@@ -44,6 +44,7 @@ target_sources(midi_composer_core
         src/app/core_facade.cpp
         src/app/document_manager.hpp
         src/app/document_manager.cpp
+        src/app/preferences.cpp
         src/device/audio_device.hpp
         src/device/audio_device.cpp
         src/device/midi_service.hpp
@@ -234,6 +235,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/edit_service_tests.cpp
         tests/persistence_tests.cpp
         tests/playback_tests.cpp
+        tests/preferences_tests.cpp
         tests/timeline_tests.cpp
         tests/ui_bundle_tests.cpp
     )

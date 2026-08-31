@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commdlg.h>
+#include <shlobj.h>
 
 namespace midi_composer::shell {
 
@@ -46,6 +47,35 @@ std::optional<std::string> save_file_dialog(const wchar_t* filter, const wchar_t
     return wide_to_utf8(file);
 }
 
+std::optional<std::string> open_folder_dialog() {
+    // IFileDialog with FOS_PICKFOLDERS rather than SHBrowseForFolder: the old
+    // one shows a tree with no path box and no recent places, which is a poor
+    // way to reach a folder the user just downloaded something into.
+    IFileOpenDialog* dialog = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog)))) {
+        return std::nullopt;
+    }
+
+    std::optional<std::string> chosen;
+    DWORD options = 0;
+    if (SUCCEEDED(dialog->GetOptions(&options)) &&
+        SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST)) &&
+        SUCCEEDED(dialog->Show(nullptr))) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item))) {
+            PWSTR wide = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wide))) {
+                chosen = wide_to_utf8(wide);
+                CoTaskMemFree(wide);
+            }
+            item->Release();
+        }
+    }
+    dialog->Release();
+    return chosen;
+}
+
 namespace {
 
 std::wstring utf8_to_wide(const std::string& text) {
@@ -76,6 +106,7 @@ namespace midi_composer::shell {
 
 std::optional<std::string> open_file_dialog(const wchar_t*) { return std::nullopt; }
 std::optional<std::string> save_file_dialog(const wchar_t*, const wchar_t*) { return std::nullopt; }
+std::optional<std::string> open_folder_dialog() { return std::nullopt; }
 
 void show_error_dialog(const std::string& title, const std::string& message) {
     std::fprintf(stderr, "%s: %s\n", title.c_str(), message.c_str());

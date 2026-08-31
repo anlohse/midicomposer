@@ -31,6 +31,12 @@ export interface OutputParameter {
 
 export interface OutputChoice { id: string; name: string }
 
+/** What this installation remembers between runs, as opposed to a project. */
+export interface Preferences {
+    selectedOutput: string;
+    clapSearchPaths: string[];
+}
+
 export interface OutputInfo {
     id: string;
     name: string;
@@ -64,6 +70,7 @@ export function headlineValue(info: OutputInfo | null): string | null {
 export class OutputSettings extends LitElement {
     @state() private info: OutputInfo | null = null;
     @state() private error: string | null = null;
+    @state() private folders: string[] = [];
 
     static styles = css`
         .modal-overlay {
@@ -78,6 +85,7 @@ export class OutputSettings extends LitElement {
             border-radius: 4px;
             padding: 16px 20px;
             min-width: 380px;
+            max-width: 520px;
             color: #ccc;
             font-size: 0.85rem;
         }
@@ -103,6 +111,27 @@ export class OutputSettings extends LitElement {
             padding: 6px 8px;
             margin-bottom: 10px;
         }
+        .section {
+            border-top: 1px solid #3c3c3c;
+            margin-top: 14px; padding-top: 12px;
+        }
+        .section h4 { margin: 0 0 2px 0; font-size: 0.85rem; color: #ccc; font-weight: 600; }
+        .hint { color: #888; font-size: 0.75rem; margin-bottom: 8px; }
+        .folder {
+            display: flex; align-items: center; gap: 8px;
+            padding: 3px 0; font-size: 0.8rem;
+        }
+        .folder .path {
+            flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            direction: rtl; text-align: left;
+        }
+        button.link {
+            background: none; border: none; color: #888; padding: 0 4px;
+            cursor: pointer; font-size: 0.85rem;
+        }
+        button.link:hover { background: none; color: #f48771; }
+        button.secondary { background: #3c3c3c; }
+        button.secondary:hover { background: #4a4a4a; }
         .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
         button {
             background: #0e639c; border: none; color: white;
@@ -118,6 +147,41 @@ export class OutputSettings extends LitElement {
 
     private async reload() {
         this.info = await loadOutputInfo();
+        try {
+            const prefs = await CoreBridge.sendCommand<Preferences>('get_preferences');
+            this.folders = prefs?.clapSearchPaths ?? [];
+        } catch (err) {
+            // The dialog still configures the output without them; only the
+            // folder list is missing, so it says so there rather than here.
+            console.error('Failed to read the preferences', err);
+        }
+    }
+
+    private async setFolders(paths: string[]) {
+        this.error = null;
+        try {
+            await CoreBridge.sendCommand('set_clap_search_paths', { paths });
+        } catch (err) {
+            this.error = err instanceof Error ? err.message : String(err);
+        }
+        // A scan can add outputs, so the whole schema is re-read: the output
+        // list in this very dialog is what just changed.
+        await this.reload();
+    }
+
+    private async addFolder() {
+        const chosen = await CoreBridge.sendCommand<{ path?: string; cancelled?: boolean }>(
+            'choose_folder');
+        if (!chosen?.path) return;
+        if (this.folders.includes(chosen.path)) return;
+        await this.setFolders([...this.folders, chosen.path]);
+    }
+
+    private async removeFolder(path: string) {
+        // Plugins already loaded from it stay until the next run. Unloading one
+        // that a track is playing through would silence the project to tidy up
+        // a list, which is not what removing a folder asked for.
+        await this.setFolders(this.folders.filter(p => p !== path));
     }
 
     private async selectOutput(id: string) {
@@ -227,6 +291,25 @@ export class OutputSettings extends LitElement {
                     ${this.info && this.info.parameters.length === 0
                         ? html`<div class="empty">This output has nothing to configure.</div>`
                         : (this.info?.parameters ?? []).map(p => this.renderParameter(p))}
+
+                    <div class="section">
+                        <h4>Plugin folders</h4>
+                        <div class="hint">
+                            Searched for .clap plugins at startup, in addition to
+                            the standard locations. A folder added here is found
+                            straight away; one removed keeps its plugins until
+                            the next run.
+                        </div>
+                        ${this.folders.map(path => html`
+                            <div class="folder">
+                                <span class="path" title=${path}>${path}</span>
+                                <button class="link" title="Remove"
+                                        @click=${() => this.removeFolder(path)}>&times;</button>
+                            </div>`)}
+                        <button class="secondary" @click=${() => this.addFolder()}>
+                            Add folder…
+                        </button>
+                    </div>
 
                     <div class="modal-footer">
                         <button @click=${() => this.close()}>Close</button>
