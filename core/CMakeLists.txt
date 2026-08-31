@@ -106,8 +106,12 @@ target_link_libraries(midi_composer_core
     PRIVATE
         miniz
         miniaudio
-        clap_headers
 )
+
+# PUBLIC because it is: ClapInstance takes a clap_plugin_t and hands back a
+# clap_host_t, so anything including it needs the headers. Hiding them would
+# mean an opaque handle and an out-of-line destructor for no gain here.
+target_link_libraries(midi_composer_core PUBLIC clap_headers)
 
 if(WIN32)
     target_link_libraries(midi_composer_core PUBLIC winmm.lib comdlg32.lib)

@@ -245,3 +245,38 @@ TEST_CASE("a real .clap loads, describes itself and plays") {
     CHECK_FALSE((*instance)->failure().has_value());
     CHECK(peak > 0.0f);
 }
+
+#include "device/audio_device.hpp"
+#include <chrono>
+#include <thread>
+
+TEST_CASE("a real plugin can be pulled by a real audio device") {
+    const auto files = playback::ClapLibrary::find_plugin_files();
+    if (files.empty()) {
+        MESSAGE("No .clap found; set CLAP_PATH to run this against a real plugin");
+        return;
+    }
+    const auto library = playback::ClapLibrary::open(files.front());
+    REQUIRE(library.has_value());
+    const auto descriptors = (*library)->plugins();
+    REQUIRE_FALSE(descriptors.empty());
+    auto instance = (*library)->create(descriptors.front().id, 48000);
+    REQUIRE(instance.has_value());
+
+    // Exactly the sequence selecting it in the application performs: the device
+    // opens and starts pulling before the transport has started the plugin.
+    device::AudioDevice audio;
+    const auto opened = audio.start(**instance);
+    MESSAGE("device: ", opened.has_value() ? "opened" : opened.error().message);
+    REQUIRE(opened.has_value());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(audio.frames_rendered() > 0);
+
+    REQUIRE((*instance)->start().has_value());
+    (*instance)->note_on(0, 45, 100, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    audio.stop();
+    CHECK_FALSE((*instance)->failure().has_value());
+}
