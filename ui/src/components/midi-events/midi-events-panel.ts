@@ -3,6 +3,7 @@ import { customElement, property, state, query } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { DocumentSnapshot, TrackSnapshot } from '../../models/document';
 import { CoreBridge } from '../../bridge/coreBridge';
+import { loadOutputInfo, type OutputChoice } from '../shell/output-settings';
 import { pitchName } from '../../models/pitch';
 import { GM_FAMILIES, gmProgramName, isPercussionChannel } from '../../models/gmPrograms';
 import { CLEFS, CLEF_ORDER, clefDef } from '../../models/clef';
@@ -398,6 +399,19 @@ export class MidiEventsPanel extends LitElement {
             </div>
 
             <div class="field-group">
+                <label for="track-output">Output</label>
+                <select id="track-output" class="clef"
+                        title="Which output plays this track. The route belongs to its MIDI channel, so two tracks sharing a channel share it."
+                        @change=${(e: Event) => this.send('set_track_output', {
+                            trackId, outputId: (e.target as HTMLSelectElement).value,
+                        })}>
+                    <option value="" ?selected=${!track.outputId}>Project output</option>
+                    ${this.availableOutputs.map(o => html`
+                        <option value=${o.id} ?selected=${o.id === track.outputId}>${o.name}</option>`)}
+                </select>
+            </div>
+
+            <div class="field-group">
                 <label for="clef">Clef</label>
                 <select id="clef" class="clef"
                         title="Staff clef for this track — display only, pitches are unchanged"
@@ -435,6 +449,15 @@ export class MidiEventsPanel extends LitElement {
     }
 
     // ─── Rows ────────────────────────────────────────────────────────────────
+
+    /** What can be routed to. Fixed for a build, so read once. */
+    @state() private availableOutputs: OutputChoice[] = [];
+
+    async connectedCallback() {
+        super.connectedCallback();
+        const info = await loadOutputInfo();
+        this.availableOutputs = info?.available ?? [];
+    }
 
     private renderRow(ev: PanelEvent) {
         const ppqn = this.doc?.ppqn ?? 480;

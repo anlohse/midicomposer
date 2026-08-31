@@ -53,6 +53,8 @@ target_sources(midi_composer_core
         src/playback/internal_synth_output.hpp
         src/playback/internal_synth_output.cpp
         src/playback/output_plugin.hpp
+        src/playback/routing_output.hpp
+        src/playback/routing_output.cpp
         src/playback/playback_engine.hpp
         src/playback/playback_engine.cpp
         src/playback/system_midi_output.hpp

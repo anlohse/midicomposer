@@ -22,7 +22,7 @@ function doc(notes: Array<[number, number, number]>, opts: Options = {}): Docume
         timeSignatureMap: opts.timeSignatureMap ?? [{ tick: 0, numerator: 4, denominator: 4 }],
         keySignatureMap: opts.keySignatureMap ?? [{ tick: 0, fifths: 0, minor: false }],
         tracks: [{
-            id: '1', name: 'T', midiChannel: 0, clef: 'treble', volume: 100, pan: 64,
+            id: '1', name: 'T', midiChannel: 0, clef: 'treble', outputId: '', volume: 100, pan: 64,
             muted: false, solo: false, armed: false,
             notes: notes.map(([startTick, pitch, durationTicks], i): NoteSnapshot => ({
                 id: String(i + 1), startTick, pitch, durationTicks, velocity: 100,

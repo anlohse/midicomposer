@@ -59,6 +59,7 @@ nlohmann::json ProjectSerializer::to_json(const music::Composition& comp) {
         t["name"] = track.name();
         t["midiChannel"] = track.midi_channel();
         t["clef"] = music::clef_to_string(track.clef());
+        t["outputId"] = std::string(track.output_id());
         t["volume"] = track.volume();
         t["pan"] = track.pan();
         t["muted"] = track.is_muted();
@@ -168,6 +169,9 @@ base::Result<music::Composition> ProjectSerializer::from_json(const nlohmann::js
                                t.value("name", std::string{"Track"}));
             track.set_midi_channel(t.value("midiChannel", uint8_t{0}) & 0x0F);
             track.set_clef(music::clef_from_string(t.value("clef", std::string{"treble"})));
+            // Absent means "the project's output", which is what every project
+            // written before this had.
+            track.set_output_id(t.value("outputId", std::string{}));
             track.set_volume(std::min<uint8_t>(127, t.value("volume", uint8_t{100})));
             track.set_pan(std::min<uint8_t>(127, t.value("pan", uint8_t{64})));
             track.set_muted(t.value("muted", false));

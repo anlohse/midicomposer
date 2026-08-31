@@ -5,6 +5,7 @@
 #include "io/midi_file.hpp"
 #include "io/wav_file.hpp"
 #include <algorithm>
+#include <array>
 #include <filesystem>
 
 namespace {
@@ -40,6 +41,7 @@ nlohmann::json track_props_to_json(const mc::music::Track& track) {
     t["name"] = track.name();
     t["midiChannel"] = track.midi_channel();
     t["clef"] = mc::music::clef_to_string(track.clef());
+    t["outputId"] = std::string(track.output_id());
     t["volume"] = track.volume();
     t["pan"] = track.pan();
     t["muted"] = track.is_muted();
@@ -109,7 +111,8 @@ const mc::music::Track* find_track_const(const mc::music::Composition& comp, mc:
 
 namespace midi_composer::app {
 
-CoreFacade::CoreFacade() : m_playback_engine(m_midi_service, m_system_output) {
+CoreFacade::CoreFacade() : m_playback_engine(m_midi_service, m_routing) {
+    m_routing.set_default_target(&m_system_output);
     MC_LOG_INFO("CoreFacade initialized");
 }
 
@@ -227,6 +230,7 @@ std::vector<base::CompositionId> CoreFacade::get_open_documents() const {
 }
 
 void CoreFacade::refresh_playback_if_active(base::CompositionId doc_id, const project::ProjectDocument& doc) {
+    refresh_routes(doc);
     if (m_transport_doc_id != doc_id) return;
     auto state = m_playback_engine.state();
     if (state == playback::TransportState::Playing || state == playback::TransportState::Recording) {
@@ -463,14 +467,66 @@ base::Result<void> CoreFacade::with_track(base::CompositionId doc_id, base::Trac
     return {};
 }
 
+base::Result<void> CoreFacade::set_track_output(base::CompositionId doc_id,
+                                                base::TrackId track_id,
+                                                const std::string& output_id) {
+    if (!output_id.empty()) {
+        const auto available = outputs();
+        const bool known = std::any_of(available.begin(), available.end(),
+                                       [&](auto* o) { return o->id() == output_id; });
+        if (!known) {
+            return std::unexpected(base::Error{base::ErrorCode::NotFound,
+                                               "No such output: " + output_id});
+        }
+    }
+    std::lock_guard lock(m_doc_mutex);
+    return with_track(doc_id, track_id,
+                      [&output_id](auto& t) { t.set_output_id(output_id); },
+                      PlaybackSync::Rebuild);
+}
+
 base::Result<void> CoreFacade::set_track_volume(base::CompositionId doc_id, base::TrackId track_id, uint8_t volume) {
     std::lock_guard lock(m_doc_mutex);
     return with_track(doc_id, track_id, [volume](auto& t) { t.set_volume(volume); },
                       PlaybackSync::MixOnly);
 }
 
+void CoreFacade::refresh_routes(const project::ProjectDocument& doc) {
+    std::array<playback::OutputPlugin*, 16> routes{};
+    for (const auto& track : doc.composition().tracks()) {
+        if (track.output_id().empty()) continue;   // follows the project's
+        for (auto* candidate : outputs()) {
+            if (candidate->id() == track.output_id()) {
+                // Two tracks on one channel resolve the way they already do for
+                // volume: the last one wins.
+                routes[track.midi_channel() & 0x0F] = candidate;
+                break;
+            }
+        }
+        // An output a track names but this build does not have leaves the
+        // channel on the default. That is §8's shape: it plays, rather than
+        // falling silent with nothing to explain it.
+    }
+
+    // Rebuilt on every document change, so only a real move is worth acting on.
+    if (m_routing.set_routes(routes)) {
+        m_playback_engine.outputs_changed();
+        follow_output_audio();
+    }
+}
+
 void CoreFacade::follow_output_audio() {
-    auto* source = m_selected_output->audio();
+    // Asked of the routing layer, not the selected output: a track pointing at
+    // the synth has to open the device even when the project's output is a
+    // MIDI port.
+    auto* source = m_routing.audio();
+    // Idempotent on purpose: this is reached from every track edit, because
+    // routes are rebuilt whenever the document changes. Reopening the device on
+    // each one would glitch the audio for every note typed.
+    if (source == m_audio_source && m_audio_device.is_running() == (source != nullptr)) {
+        return;
+    }
+    m_audio_source = source;
     if (!source) {
         m_audio_device.stop();
         return;
@@ -506,7 +562,8 @@ base::Result<void> CoreFacade::select_output(std::string_view id) {
         if (candidate != m_selected_output) {
             m_selected_output->stop();
             m_selected_output = candidate;
-            m_playback_engine.set_output(*candidate);
+            m_routing.set_default_target(candidate);
+            m_playback_engine.outputs_changed();
             follow_output_audio();
             MC_LOG_INFO("Output is now {}", std::string(candidate->name()));
         }

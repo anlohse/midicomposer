@@ -444,6 +444,12 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             }
             info["parameters"] = params;
             response["result"] = info;
+        } else if (type == "set_track_output") {
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
+            auto res = m_core.set_track_output(doc_id, track_id,
+                                               payload.value("outputId", std::string{}));
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "select_output") {
             auto res = m_core.select_output(payload.at("id").get<std::string>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }

@@ -422,6 +422,29 @@ base::Result<void> EditService::update_note(
     return {};
 }
 
+namespace {
+
+// The lowest channel no track is using, so a new track arrives with its own
+// instrument, its own fader and its own route rather than sharing the first
+// track's. Channel 10 is skipped unless nothing else is left: General MIDI
+// reserves it for percussion, and a melodic track landing there would play as
+// drums.
+//
+// Past sixteen tracks they have to start sharing. MIDI has sixteen channels and
+// no amount of arranging changes that.
+std::uint8_t next_free_channel(const music::Composition& comp) {
+    bool used[16] = {};
+    for (const auto& t : comp.tracks()) used[t.midi_channel() & 0x0F] = true;
+    constexpr std::uint8_t kPercussion = 9;
+    for (std::uint8_t ch = 0; ch < 16; ++ch) {
+        if (ch != kPercussion && !used[ch]) return ch;
+    }
+    if (!used[kPercussion]) return kPercussion;
+    return 0;
+}
+
+} // namespace
+
 base::Result<base::TrackId> EditService::create_track(
     project::ProjectDocument& doc,
     base::TrackId new_id,
@@ -430,6 +453,7 @@ base::Result<base::TrackId> EditService::create_track(
     if (name.empty()) name = "Track " + std::to_string(new_id.value());
 
     music::Track track(new_id, std::move(name));
+    track.set_midi_channel(next_free_channel(doc.composition()));
     doc.composition().tracks().push_back(track);
     // Adding or removing a track shifts the whole track list (and can restore a
     // track full of notes on undo), so the UI re-snapshots instead of diffing.

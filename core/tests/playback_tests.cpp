@@ -874,3 +874,142 @@ TEST_CASE("two tracks with different instruments render differently") {
     // engine before this change; it was the synth that threw it away.
     CHECK(a->interleaved_stereo != b->interleaved_stereo);
 }
+
+// ─── Routing ─────────────────────────────────────────────────────────────────
+
+#include "playback/routing_output.hpp"
+
+TEST_CASE("channels reach the output they are routed to") {
+    testing::RecordingOutput a, b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[2] = &b;
+    REQUIRE(routing.set_routes(routes));
+
+    routing.note_on(0, 60, 100, 0);   // default
+    routing.note_on(2, 64, 100, 0);   // routed
+
+    CHECK(a.sent_note_on(0, 60));
+    CHECK_FALSE(a.sent_note_on(2, 64));
+    CHECK(b.sent_note_on(2, 64));
+}
+
+TEST_CASE("every kind of event follows the route, not just notes") {
+    testing::RecordingOutput a, b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[5] = &b;
+    routing.set_routes(routes);
+
+    // A track's instrument, its mixer level and its bend all belong with its
+    // notes; splitting them across outputs would be worse than not routing.
+    routing.program_change(5, 40, 0);
+    routing.controller(5, 7, 90, 0);
+    routing.pitch_bend(5, 1000, 0);
+
+    CHECK(a.events().empty());
+    CHECK(b.events().size() == 3);
+}
+
+TEST_CASE("setting the same routes twice reports no change") {
+    testing::RecordingOutput a, b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[1] = &b;
+    CHECK(routing.set_routes(routes));
+    // Rebuilt on every document change, so "nothing moved" has to be cheap and
+    // has to be reported, or every note typed would re-send the whole mix.
+    CHECK_FALSE(routing.set_routes(routes));
+}
+
+TEST_CASE("starting reaches every reachable output, not just the default") {
+    testing::RecordingOutput a, b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[3] = &b;
+    routing.set_routes(routes);
+
+    REQUIRE(routing.start().has_value());
+    CHECK(a.starts() == 1);
+    CHECK(b.starts() == 1);
+}
+
+TEST_CASE("one output refusing to start refuses the whole transport") {
+    testing::RecordingOutput a, b;
+    b.fail_to_start({base::ErrorCode::NotFound, "no sample bank loaded"});
+
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[3] = &b;
+    routing.set_routes(routes);
+
+    const auto started = routing.start();
+    REQUIRE_FALSE(started.has_value());
+    // Named: with several outputs, the one that failed may not be the one the
+    // user was listening to.
+    CHECK(started.error().message == "Recording: no sample bank loaded");
+}
+
+TEST_CASE("a failure on any routed output is reported") {
+    testing::RecordingOutput a, b;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&a);
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[7] = &b;
+    routing.set_routes(routes);
+
+    CHECK_FALSE(routing.failure().has_value());
+    b.fail_now({base::ErrorCode::DeviceFailure, "device went away"});
+    REQUIRE(routing.failure().has_value());
+    CHECK(routing.failure()->message == "device went away");
+}
+
+TEST_CASE("audio is offered only while exactly one output makes it") {
+    testing::RecordingOutput midi;          // makes none
+    playback::InternalSynthOutput synth_a;
+    playback::InternalSynthOutput synth_b;
+
+    playback::RoutingOutput routing;
+    routing.set_default_target(&midi);
+    CHECK(routing.audio() == nullptr);
+
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[0] = &synth_a;
+    routing.set_routes(routes);
+    CHECK(routing.audio() == synth_a.audio());
+
+    // Two sources need summing, and there is no bus. Answering with one of them
+    // would silently drop the other, so the honest answer is none.
+    routes[1] = &synth_b;
+    routing.set_routes(routes);
+    CHECK(routing.audio() == nullptr);
+}
+
+TEST_CASE("a routed track plays through its own output end to end") {
+    device::MidiService midi;
+    testing::RecordingOutput fallback;
+    playback::InternalSynthOutput synth;
+    playback::RoutingOutput routing;
+    routing.set_default_target(&fallback);
+
+    std::array<playback::OutputPlugin*, 16> routes{};
+    routes[0] = &synth;
+    routing.set_routes(routes);
+
+    playback::PlaybackEngine engine{midi, routing};
+    auto doc = make_document({{0, kPpqn}});
+    const auto rendered = engine.render_offline(doc);
+
+    // The track is on channel 0, which is routed to the synth: the render has
+    // sound in it, and the default output never saw the note.
+    REQUIRE(rendered.has_value());
+    CHECK(peak(rendered->interleaved_stereo, 0, 20000) > 0.01f);
+    CHECK(fallback.events().empty());
+}

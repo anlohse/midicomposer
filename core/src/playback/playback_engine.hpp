@@ -87,9 +87,14 @@ public:
     // recorder listens to, and where playback goes is the plugin's business.
     PlaybackEngine(device::MidiService& midi_input, OutputPlugin& output);
 
-    /** Point playback at a different output. The caller is responsible for the
-        old one being stopped; the engine only redirects. */
-    void set_output(OutputPlugin& output);
+    /**
+     * The outputs behind the plugin have changed.
+     *
+     * What the engine believes it has already put on the wire is true of the
+     * output that received it and of nothing else, so a channel that has moved
+     * would otherwise never be told its level again.
+     */
+    void outputs_changed();
     ~PlaybackEngine();
 
     // Both start the output first and report why they could not, which is what
