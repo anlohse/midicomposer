@@ -483,6 +483,15 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             }
             auto res = m_core.set_clap_search_paths(std::move(paths));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "choose_file") {
+            // The pattern comes from what the plugin declared for that
+            // parameter: the host draws a picker for a File without ever
+            // learning what the file is for.
+            const auto filter = shell::make_file_filter(
+                payload.value("filter", std::string{}));
+            auto chosen = shell::open_file_dialog(filter.c_str());
+            if (!chosen) { response["result"] = {{"cancelled", true}}; }
+            else { response["result"] = {{"path", *chosen}}; }
         } else if (type == "choose_folder") {
             // The core opens it, like every other path the core is given: a
             // browser has no folder picker, and one typed by hand is a typo

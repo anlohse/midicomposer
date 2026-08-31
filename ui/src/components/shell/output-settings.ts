@@ -131,6 +131,7 @@ export class OutputSettings extends LitElement {
         }
         button.link:hover { background: none; color: #f48771; }
         button.secondary { background: #3c3c3c; }
+        button.inline { padding: 3px 8px; font-size: 0.8rem; white-space: nowrap; }
         button.secondary:hover { background: #4a4a4a; }
         .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
         button {
@@ -211,6 +212,16 @@ export class OutputSettings extends LitElement {
         await this.reload();
     }
 
+    private async browseFor(p: OutputParameter) {
+        // The dialog is the core's, like every other path the core is given.
+        // A path typed into the box works too, but a picker is how a file that
+        // was just downloaded gets found.
+        const chosen = await CoreBridge.sendCommand<{ path?: string; cancelled?: boolean }>(
+            'choose_file', { filter: p.filter ?? '' });
+        if (!chosen?.path) return;
+        await this.setParameter(p.name, chosen.path);
+    }
+
     private close() {
         this.dispatchEvent(new CustomEvent('close', { bubbles: true, composed: true }));
     }
@@ -242,14 +253,15 @@ export class OutputSettings extends LitElement {
                                @change=${(e: Event) => this.setParameter(
                                    p.name, (e.target as HTMLInputElement).checked)}>`;
                 case 'file':
-                    // Typed for now. A real picker needs a bridge call to the
-                    // native dialog, which arrives with the first plugin that
-                    // has a file to pick.
+                    // The box stays alongside the picker: a path can be pasted,
+                    // and it is the only way to see the whole of a long one.
                     return html`
                         <input type="text" .value=${String(p.value ?? '')}
                                placeholder=${p.filter ?? ''}
                                @change=${(e: Event) => this.setParameter(
-                                   p.name, (e.target as HTMLInputElement).value)}>`;
+                                   p.name, (e.target as HTMLInputElement).value)}>
+                        <button class="secondary inline"
+                                @click=${() => this.browseFor(p)}>Browse…</button>`;
                 default:
                     return html`
                         <input type="text" .value=${String(p.value ?? '')}

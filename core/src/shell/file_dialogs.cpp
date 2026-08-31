@@ -1,5 +1,7 @@
 #include "file_dialogs.hpp"
 
+#include <vector>
+
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
@@ -91,6 +93,46 @@ std::wstring utf8_to_wide(const std::string& text) {
 
 } // namespace
 
+std::wstring make_file_filter(const std::string& pattern) {
+    std::vector<std::string> patterns;
+    size_t start = 0;
+    while (true) {
+        const size_t sep = pattern.find(';', start);
+        const auto piece = pattern.substr(
+            start, sep == std::string::npos ? std::string::npos : sep - start);
+        const auto first = piece.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            const auto last = piece.find_last_not_of(" \t");
+            patterns.push_back(piece.substr(first, last - first + 1));
+        }
+        if (sep == std::string::npos) break;
+        start = sep + 1;
+    }
+
+    // Each entry is a label and a pattern, both NUL terminated, and the list
+    // itself ends with an empty entry -- which is why this cannot be built with
+    // ordinary string concatenation.
+    std::wstring filter;
+    if (!patterns.empty()) {
+        std::string joined;
+        for (const auto& one : patterns) {
+            if (!joined.empty()) joined += ';';
+            joined += one;
+        }
+        const auto wide = utf8_to_wide(joined);
+        filter += L"Supported files (" + wide + L")";
+        filter.push_back(L'\0');
+        filter += wide;
+        filter.push_back(L'\0');
+    }
+    filter += L"All Files (*.*)";
+    filter.push_back(L'\0');
+    filter += L"*.*";
+    filter.push_back(L'\0');
+    filter.push_back(L'\0');
+    return filter;
+}
+
 void show_error_dialog(const std::string& title, const std::string& message) {
     MessageBoxW(nullptr, utf8_to_wide(message).c_str(), utf8_to_wide(title).c_str(),
                 MB_OK | MB_ICONERROR);
@@ -107,6 +149,15 @@ namespace midi_composer::shell {
 std::optional<std::string> open_file_dialog(const wchar_t*) { return std::nullopt; }
 std::optional<std::string> save_file_dialog(const wchar_t*, const wchar_t*) { return std::nullopt; }
 std::optional<std::string> open_folder_dialog() { return std::nullopt; }
+
+std::wstring make_file_filter(const std::string&) {
+    std::wstring filter = L"All Files (*.*)";
+    filter.push_back(L'\0');
+    filter += L"*.*";
+    filter.push_back(L'\0');
+    filter.push_back(L'\0');
+    return filter;
+}
 
 void show_error_dialog(const std::string& title, const std::string& message) {
     std::fprintf(stderr, "%s: %s\n", title.c_str(), message.c_str());
