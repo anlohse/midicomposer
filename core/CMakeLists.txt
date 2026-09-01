@@ -149,6 +149,21 @@ add_executable(midi_composer_app
     src/shell/main.cpp
 )
 
+# A windowed application, not a console one.
+#
+# Built as a console app, double-clicking it opens a black console window
+# *and* the real one, often behind it -- and closing the console, which is the
+# natural thing to do with a window full of log lines you did not ask for,
+# kills the application. That is indistinguishable from "it will not start".
+#
+# /ENTRY:mainCRTStartup keeps plain `main()`: the alternative is a WinMain that
+# exists only to satisfy the linker. The log still reaches a file (see
+# base/logger.hpp), which is what a windowed build needs instead of stdout.
+if(MSVC)
+    set_target_properties(midi_composer_app PROPERTIES
+        LINK_FLAGS "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup")
+endif()
+
 target_link_libraries(midi_composer_app
     PRIVATE
         midi_composer_core
