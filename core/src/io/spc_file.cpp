@@ -18,6 +18,7 @@ namespace {
 
 using playback::Sample;
 using playback::SampleBank;
+using playback::Zone;
 
 // The layout of the format, all of it fixed.
 constexpr size_t kHeaderSize   = 0x100;      // tags and registers
@@ -238,10 +239,16 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         sample.name = "Sample " + std::to_string(entry);
         sample.data = std::move(decoded.samples);
         sample.source_rate = kChipSampleRate;
-        sample.root_key = kAssumedRootKey;
+
+        // One zone over the whole keyboard. A rip states no key ranges -- the
+        // driver decided which sample a note used, and that is code -- so
+        // stretching one recording across the range is all there is to do, and
+        // is what the chip did anyway.
+        Zone zone;
+        zone.root_key = kAssumedRootKey;
         if (decoded.loop_start >= 0) {
-            sample.loop_start = decoded.loop_start;
-            sample.loop_end = static_cast<int>(sample.data.size());
+            zone.loop_start = decoded.loop_start;
+            zone.loop_end = static_cast<int>(sample.data.size());
         }
 
         // ── The pitch, measured rather than assumed ──────────────────────────
@@ -254,11 +261,11 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         //
         // Measured over the loop when there is one -- the steady state a looped
         // sample exists to reach -- and over the whole thing when there is not.
-        const bool loop_is_usable = sample.loop_start >= 0 &&
-                                    sample.loop_end - sample.loop_start >= kUsableLoopFrames;
+        const bool loop_is_usable = zone.loop_start >= 0 &&
+                                    zone.loop_end - zone.loop_start >= kUsableLoopFrames;
         const auto pitch = estimate_pitch(sample.data, sample.source_rate,
-                                          loop_is_usable ? sample.loop_start : 0,
-                                          loop_is_usable ? sample.loop_end : -1);
+                                          loop_is_usable ? zone.loop_start : 0,
+                                          loop_is_usable ? zone.loop_end : -1);
         bool pitched = false;
         if (pitch.frequency > 0.0 && pitch.confidence >= kPitchConfidence) {
             pitched = true;
@@ -267,27 +274,27 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
             // and one that is a third of a semitone sharp -- and a bank where
             // every instrument is differently sharp is a bank that cannot be
             // played together.
-            sample.root_key = static_cast<int>(std::lround(pitch.midi_note));
-            sample.fine_tune_cents = (sample.root_key - pitch.midi_note) * 100.0;
+            zone.root_key = static_cast<int>(std::lround(pitch.midi_note));
+            zone.fine_tune_cents = (zone.root_key - pitch.midi_note) * 100.0;
         }
         // Defaults for a sample no voice was pointed at: audible immediately
         // and held, which is the least wrong thing to do with an unknown.
-        sample.attack = 0.001f;
-        sample.decay = 0.0f;
-        sample.sustain = 1.0f;
-        sample.sustain_rate = 0.0f;
-        sample.release = 0.05f;
+        zone.attack = 0.001f;
+        zone.decay = 0.0f;
+        zone.sustain = 1.0f;
+        zone.sustain_rate = 0.0f;
+        zone.release = 0.05f;
 
         if (const auto found = setup_for_entry.find(static_cast<uint8_t>(entry));
             found != setup_for_entry.end()) {
-            sample.attack = found->second.adsr.attack;
-            sample.decay = found->second.adsr.decay;
-            sample.sustain = found->second.adsr.sustain;
-            sample.sustain_rate = found->second.adsr.sustain_rate;
+            zone.attack = found->second.adsr.attack;
+            zone.decay = found->second.adsr.decay;
+            zone.sustain = found->second.adsr.sustain;
+            zone.sustain_rate = found->second.adsr.sustain_rate;
             // From the same voice, deliberately: `$4D` says whether *this*
             // voice reaches the echo, and it is part of the same configuration
             // the envelope came from.
-            sample.echo_send = found->second.echo_send;
+            zone.echo_send = found->second.echo_send;
             // Release is deliberately not taken: the chip has no release rate
             // in ADSR -- key-off runs a fixed linear fade -- and §11a.8 chose a
             // short curve over that, so a note does not end on a click.
@@ -308,8 +315,8 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         if (pitched) {
             static constexpr const char* kNoteNames[12] =
                 {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-            label += kNoteNames[sample.root_key % 12];
-            label += std::to_string(sample.root_key / 12 - 1);
+            label += kNoteNames[zone.root_key % 12];
+            label += std::to_string(zone.root_key / 12 - 1);
             label += ", ";
         }
         if (seconds >= 1.0) {
@@ -318,14 +325,16 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         } else {
             label += std::to_string(static_cast<int>(seconds * 1000 + 0.5)) + "ms";
         }
-        if (sample.loop_start >= 0) label += ", looped";
+        if (zone.loop_start >= 0) label += ", looped";
         label += ")";
         sample.name = label;
 
         bank->samples.push_back(std::move(sample));
-        bank->program_to_sample[static_cast<size_t>(program)] =
-            static_cast<int>(bank->samples.size()) - 1;
-        bank->program_names[static_cast<size_t>(program)] = label;
+        zone.sample = static_cast<int>(bank->samples.size()) - 1;
+
+        auto& slot = bank->programs[static_cast<size_t>(program)];
+        slot.name = label;
+        slot.zones.push_back(zone);
         ++program;
     }
 

@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <tuple>
 #include <vector>
 
 namespace midi_composer::io {
@@ -16,6 +17,7 @@ namespace {
 
 using playback::Sample;
 using playback::SampleBank;
+using playback::Zone;
 
 base::Error bad(const std::string& what) {
     return base::Error{base::ErrorCode::ParseFailure, "Not a usable SoundFont: " + what};
@@ -120,6 +122,8 @@ constexpr uint16_t kGenAttackVolEnv     = 34;
 constexpr uint16_t kGenDecayVolEnv      = 36;
 constexpr uint16_t kGenSustainVolEnv    = 37;
 constexpr uint16_t kGenReleaseVolEnv    = 38;
+constexpr uint16_t kGenKeyRange         = 43;
+constexpr uint16_t kGenVelocityRange    = 44;
 
 /** Timecents to seconds. SF2 states envelope times logarithmically, and its
     "no time at all" value is a very large negative rather than zero. */
@@ -189,25 +193,38 @@ std::optional<uint16_t> find_generator(const std::map<uint16_t, uint16_t>& gener
 }
 
 /**
- * The zone of `bags` belonging to record `index`, and the generator span of the
- * first zone that names `wanted`.
+ * Every zone of `bags` between `bag_first` and `bag_last` that names `wanted`.
  *
  * SF2 stores a global zone first when one is present, and it is the zone that
- * does *not* name an instrument or a sample. Looking for the first zone that
- * does is what skips it without needing to know whether it was there.
+ * does *not* name an instrument or a sample. Requiring `wanted` is what skips
+ * it without needing to know whether it was there.
+ *
+ * All of them, not the first: an instrument's zones are how a piano covers the
+ * keyboard, and taking one stretches a single recording over the lot.
  */
-std::optional<std::map<uint16_t, uint16_t>> first_zone_naming(
+std::vector<std::map<uint16_t, uint16_t>> zones_naming(
     const std::vector<Bag>& bags, const std::vector<Generator>& generators,
     size_t bag_first, size_t bag_last, uint16_t wanted) {
-    for (size_t b = bag_first; b < bag_last && b + 1 < bags.size() + 1; ++b) {
-        if (b >= bags.size()) break;
+    std::vector<std::map<uint16_t, uint16_t>> out;
+    for (size_t b = bag_first; b < bag_last && b < bags.size(); ++b) {
         const size_t gen_first = bags[b].gen_index;
         const size_t gen_last =
             (b + 1 < bags.size()) ? bags[b + 1].gen_index : generators.size();
         auto zone = zone_generators(generators, gen_first, gen_last);
-        if (zone.count(wanted)) return zone;
+        if (zone.count(wanted)) out.push_back(std::move(zone));
     }
-    return std::nullopt;
+    return out;
+}
+
+/** A keyRange or velRange generator packs low in the low byte and high in the
+    high one. Absent means the whole span. */
+std::pair<uint8_t, uint8_t> range_of(const std::map<uint16_t, uint16_t>& generators,
+                                     uint16_t op) {
+    const auto found = find_generator(generators, op);
+    if (!found) return {0, 127};
+    const auto low = static_cast<uint8_t>(*found & 0xFF);
+    const auto high = static_cast<uint8_t>((*found >> 8) & 0xFF);
+    return low <= high ? std::pair{low, high} : std::pair<uint8_t, uint8_t>{0, 127};
 }
 
 } // namespace
@@ -322,96 +339,113 @@ base::Result<std::shared_ptr<SampleBank>> parse_sf2(const std::string& bytes,
         // Bank 0 only: the percussion bank and the variation banks address the
         // same 128 programs, and this model has one slot per program.
         if (preset.bank != 0 || preset.program > 127) continue;
-        if (bank->program_to_sample[preset.program] >= 0) continue;   // first wins
+        auto& program = bank->programs[preset.program];
+        if (!program.zones.empty()) continue;   // first preset for a slot wins
 
-        const size_t bag_first = preset.bag_index;
-        const size_t bag_last = presets[p + 1].bag_index;
-        auto preset_zone = first_zone_naming(preset_bags, preset_gens, bag_first, bag_last,
-                                             kGenInstrument);
-        if (!preset_zone) continue;
-        const auto instrument_id = find_generator(*preset_zone, kGenInstrument);
+        const auto preset_zones = zones_naming(preset_bags, preset_gens, preset.bag_index,
+                                               presets[p + 1].bag_index, kGenInstrument);
+        if (preset_zones.empty()) continue;
+        // One instrument per preset. A preset may layer several, which is a
+        // second kind of stacking on top of the key ranges below, and is not
+        // modelled: it would double every voice a note costs.
+        const auto instrument_id = find_generator(preset_zones.front(), kGenInstrument);
         if (!instrument_id || *instrument_id + 1u >= instruments.size()) continue;
 
         const auto& instrument = instruments[*instrument_id];
-        auto inst_zone = first_zone_naming(inst_bags, inst_gens, instrument.bag_index,
-                                           instruments[*instrument_id + 1].bag_index,
-                                           kGenSampleId);
-        if (!inst_zone) continue;
-        const auto sample_id = find_generator(*inst_zone, kGenSampleId);
-        if (!sample_id || *sample_id + 1u > sample_headers.size()) continue;
+        const auto inst_zones = zones_naming(inst_bags, inst_gens, instrument.bag_index,
+                                             instruments[*instrument_id + 1].bag_index,
+                                             kGenSampleId);
 
-        int index;
-        if (const auto known = sample_index_for_header.find(*sample_id);
-            known != sample_index_for_header.end()) {
-            index = known->second;
-        } else {
-            const auto& header = sample_headers[*sample_id];
-            if (header.end <= header.start || header.end > total_frames) continue;
+        for (const auto& inst_zone : inst_zones) {
+            const auto sample_id = find_generator(inst_zone, kGenSampleId);
+            if (!sample_id || *sample_id >= sample_headers.size()) continue;
 
-            Sample sample;
-            sample.name = header.name;
-            const size_t frames = header.end - header.start;
-            sample.data.resize(frames);
-            Reader audio(bytes.data(), bytes.size());
-            audio.seek(smpl.offset + static_cast<size_t>(header.start) * 2);
-            for (size_t i = 0; i < frames; ++i) {
-                sample.data[i] = static_cast<float>(audio.i16()) / 32768.0f;
+            // Decoded once and shared: a multi-sampled instrument reaches the
+            // same recording from several zones, and a piano would otherwise
+            // arrive several times over.
+            int index;
+            if (const auto known = sample_index_for_header.find(*sample_id);
+                known != sample_index_for_header.end()) {
+                index = known->second;
+            } else {
+                const auto& header = sample_headers[*sample_id];
+                if (header.end <= header.start || header.end > total_frames) continue;
+
+                Sample sample;
+                sample.name = header.name;
+                const size_t frames = header.end - header.start;
+                sample.data.resize(frames);
+                Reader audio(bytes.data(), bytes.size());
+                audio.seek(smpl.offset + static_cast<size_t>(header.start) * 2);
+                for (size_t i = 0; i < frames; ++i) {
+                    sample.data[i] = static_cast<float>(audio.i16()) / 32768.0f;
+                }
+                sample.source_rate = header.rate > 0 ? static_cast<int>(header.rate) : 44100;
+
+                bank->samples.push_back(std::move(sample));
+                index = static_cast<int>(bank->samples.size()) - 1;
+                sample_index_for_header.emplace(*sample_id, index);
             }
-            sample.source_rate = header.rate > 0 ? static_cast<int>(header.rate) : 44100;
-            sample.root_key = header.original_key <= 127 ? header.original_key : 60;
-            sample.fine_tune_cents = header.correction;
+
+            const auto& header = sample_headers[*sample_id];
+            Zone zone;
+            zone.sample = index;
+            std::tie(zone.low_key, zone.high_key) = range_of(inst_zone, kGenKeyRange);
+            std::tie(zone.low_velocity, zone.high_velocity) =
+                range_of(inst_zone, kGenVelocityRange);
+
+            zone.root_key = header.original_key <= 127 ? header.original_key : 60;
+            zone.fine_tune_cents = header.correction;
 
             // Loop points are absolute in the smpl chunk; a voice wants them
             // relative to the sample it is reading.
             if (header.loop_end > header.loop_start && header.loop_start >= header.start &&
                 header.loop_end <= header.end) {
-                sample.loop_start = static_cast<int>(header.loop_start - header.start);
-                sample.loop_end = static_cast<int>(header.loop_end - header.start);
+                zone.loop_start = static_cast<int>(header.loop_start - header.start);
+                zone.loop_end = static_cast<int>(header.loop_end - header.start);
             }
 
-            bank->samples.push_back(std::move(sample));
-            index = static_cast<int>(bank->samples.size()) - 1;
-            sample_index_for_header.emplace(*sample_id, index);
+            // Generators shape the note, and they belong to the zone rather
+            // than to the recording -- which is the whole reason the two are
+            // separate. Two zones can share a piano sample and give it
+            // different root keys.
+            if (const auto modes = find_generator(inst_zone, kGenSampleModes)) {
+                // 0 means play once, whatever the header's loop points say.
+                if ((*modes & 3) == 0) zone.loop_start = -1;
+            }
+            if (const auto root = find_generator(inst_zone, kGenOverridingRootKey);
+                root && *root <= 127) {
+                zone.root_key = static_cast<int>(*root);
+            }
+            if (const auto coarse = find_generator(inst_zone, kGenCoarseTune)) {
+                zone.fine_tune_cents += static_cast<int16_t>(*coarse) * 100.0;
+            }
+            if (const auto fine = find_generator(inst_zone, kGenFineTune)) {
+                zone.fine_tune_cents += static_cast<int16_t>(*fine);
+            }
+            if (const auto attack = find_generator(inst_zone, kGenAttackVolEnv)) {
+                zone.attack = timecents_to_seconds(static_cast<int16_t>(*attack));
+            }
+            if (const auto decay = find_generator(inst_zone, kGenDecayVolEnv)) {
+                zone.decay = timecents_to_seconds(static_cast<int16_t>(*decay));
+            }
+            if (const auto sustain = find_generator(inst_zone, kGenSustainVolEnv)) {
+                zone.sustain = centibels_to_level(static_cast<int16_t>(*sustain));
+            }
+            if (const auto release = find_generator(inst_zone, kGenReleaseVolEnv)) {
+                zone.release = timecents_to_seconds(static_cast<int16_t>(*release));
+            }
+
+            program.zones.push_back(zone);
         }
 
-        auto& sample = bank->samples[static_cast<size_t>(index)];
-
-        // Zone generators that shape the note. Applied per preset rather than
-        // per sample would be more faithful; with one sample per program the
-        // distinction has nowhere to show.
-        if (const auto modes = find_generator(*inst_zone, kGenSampleModes)) {
-            // 0 means play once, whatever the header's loop points say.
-            if ((*modes & 3) == 0) sample.loop_start = -1;
-        }
-        if (const auto root = find_generator(*inst_zone, kGenOverridingRootKey);
-            root && *root <= 127) {
-            sample.root_key = static_cast<int>(*root);
-        }
-        if (const auto coarse = find_generator(*inst_zone, kGenCoarseTune)) {
-            sample.fine_tune_cents += static_cast<int16_t>(*coarse) * 100.0;
-        }
-        if (const auto fine = find_generator(*inst_zone, kGenFineTune)) {
-            sample.fine_tune_cents += static_cast<int16_t>(*fine);
-        }
-        if (const auto attack = find_generator(*inst_zone, kGenAttackVolEnv)) {
-            sample.attack = timecents_to_seconds(static_cast<int16_t>(*attack));
-        }
-        if (const auto decay = find_generator(*inst_zone, kGenDecayVolEnv)) {
-            sample.decay = timecents_to_seconds(static_cast<int16_t>(*decay));
-        }
-        if (const auto sustain = find_generator(*inst_zone, kGenSustainVolEnv)) {
-            sample.sustain = centibels_to_level(static_cast<int16_t>(*sustain));
-        }
-        if (const auto release = find_generator(*inst_zone, kGenReleaseVolEnv)) {
-            sample.release = timecents_to_seconds(static_cast<int16_t>(*release));
-        }
-
-        bank->program_to_sample[preset.program] = index;
+        if (program.zones.empty()) continue;
         // The preset's name, not the sample's: a SoundFont calls the sample
-        // "Piano C4" and the preset "Grand Piano", and the second is the one a
+        // "Piano C4" and the preset "Grand Piano", and the second is what a
         // player is choosing between.
-        bank->program_names[preset.program] =
-            preset.name.empty() ? sample.name : preset.name;
+        program.name = preset.name.empty()
+                           ? bank->samples[static_cast<size_t>(program.zones.front().sample)].name
+                           : preset.name;
     }
 
     if (bank->empty()) {

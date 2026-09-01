@@ -191,9 +191,9 @@ TEST_CASE("samples are found through the directory the DSP names") {
     const auto bank = io::parse_spc(build_spc(spec), "Rip");
     REQUIRE(bank.has_value());
     CHECK((*bank)->samples.size() == 2);
-    CHECK((*bank)->for_program(0) != nullptr);
-    CHECK((*bank)->for_program(1) != nullptr);
-    CHECK((*bank)->for_program(2) == nullptr);
+    CHECK((*bank)->has_program(0));
+    CHECK((*bank)->has_program(1));
+    CHECK_FALSE((*bank)->has_program(2));
 }
 
 TEST_CASE("the directory is read from wherever the register points") {
@@ -224,9 +224,9 @@ TEST_CASE("a declared loop reaches the sample") {
 
     const auto bank = io::parse_spc(build_spc(spec), "Rip");
     REQUIRE(bank.has_value());
-    const auto& sample = (*bank)->samples[0];
-    CHECK(sample.loop_start == 16);
-    CHECK(sample.loop_end == static_cast<int>(sample.data.size()));
+    const auto& zone = (*bank)->programs[0].zones[0];
+    CHECK(zone.loop_start == 16);
+    CHECK(zone.loop_end == static_cast<int>((*bank)->sample_of(zone)->data.size()));
 }
 
 TEST_CASE("empty directory entries are skipped, not treated as the end") {
@@ -376,7 +376,7 @@ TEST_CASE("a ripped program is named after what was measured about it") {
 
     const auto bank = io::parse_spc(build_spc(spec), "Rip");
     REQUIRE(bank.has_value());
-    const auto& label = (*bank)->program_names[0];
+    const auto& label = (*bank)->programs[0].name;
     CAPTURE(label);
     CHECK(label.find("Sample 0") != std::string::npos);
     CHECK(label.find("ms") != std::string::npos);      // 128 frames at 32kHz
@@ -398,10 +398,10 @@ TEST_CASE("a sample too short to measure is not given a note in its name") {
 
     const auto bank = io::parse_spc(build_spc(spec), "Rip");
     REQUIRE(bank.has_value());
-    const auto& label = (*bank)->program_names[0];
+    const auto& label = (*bank)->programs[0].name;
     CAPTURE(label);
-    CHECK((*bank)->samples[0].root_key == 60);
-    CHECK((*bank)->samples[0].fine_tune_cents == 0.0);
+    CHECK((*bank)->programs[0].zones[0].root_key == 60);
+    CHECK((*bank)->programs[0].zones[0].fine_tune_cents == 0.0);
     CHECK(label.find("ms") != std::string::npos);
 }
 
@@ -424,14 +424,14 @@ TEST_CASE("a voice's ADSR registers reach the sample it names") {
     REQUIRE(bank.has_value());
     REQUIRE((*bank)->samples.size() == 2);
 
-    const auto& named = (*bank)->samples[1];
+    const auto& named = (*bank)->programs[1].zones[0];
     CHECK(named.attack == doctest::Approx(0.096f));
     CHECK(named.decay == doctest::Approx(0.290f));
     CHECK(named.sustain == doctest::Approx(4.0f / 8));
     CHECK(named.sustain_rate == doctest::Approx(1.2f));
 
     // The sample no voice named keeps the defaults rather than borrowing them.
-    const auto& unnamed = (*bank)->samples[0];
+    const auto& unnamed = (*bank)->programs[0].zones[0];
     CHECK(unnamed.sustain == doctest::Approx(1.0f));
     CHECK(unnamed.sustain_rate == doctest::Approx(0.0f));
 }
@@ -449,8 +449,8 @@ TEST_CASE("a voice running GAIN instead of ADSR is left alone") {
 
     const auto bank = io::parse_spc(file, "Rip");
     REQUIRE(bank.has_value());
-    CHECK((*bank)->samples[0].sustain == doctest::Approx(1.0f));
-    CHECK((*bank)->samples[0].sustain_rate == doctest::Approx(0.0f));
+    CHECK((*bank)->programs[0].zones[0].sustain == doctest::Approx(1.0f));
+    CHECK((*bank)->programs[0].zones[0].sustain_rate == doctest::Approx(0.0f));
 }
 
 TEST_CASE("the sustain rate table's endpoints are what the chip documents") {
@@ -482,8 +482,8 @@ TEST_CASE("a voice's echo bit reaches the sample it names") {
     const auto bank = io::parse_spc(file, "Rip");
     REQUIRE(bank.has_value());
     REQUIRE((*bank)->samples.size() == 2);
-    CHECK((*bank)->samples[0].echo_send);
-    CHECK_FALSE((*bank)->samples[1].echo_send);
+    CHECK((*bank)->programs[0].zones[0].echo_send);
+    CHECK_FALSE((*bank)->programs[1].zones[0].echo_send);
 }
 
 TEST_CASE("a sample no voice names still feeds the echo") {
@@ -499,5 +499,5 @@ TEST_CASE("a sample no voice names still feeds the echo") {
 
     const auto bank = io::parse_spc(file, "Rip");
     REQUIRE(bank.has_value());
-    CHECK((*bank)->samples[0].echo_send);
+    CHECK((*bank)->programs[0].zones[0].echo_send);
 }

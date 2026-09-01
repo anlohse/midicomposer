@@ -170,7 +170,11 @@ private:
         // note already sounding, and cannot: the sample it is reading may not
         // exist in the new one.
         const Sample* sample{nullptr};
-        std::shared_ptr<const SampleBank> holder;   // keeps that sample alive
+        // How to play it: root key, loop, envelope, echo send. Separate from
+        // the recording because a zone is what a SoundFont actually states, and
+        // two zones can share one recording with different answers.
+        const Zone* zone{nullptr};
+        std::shared_ptr<const SampleBank> holder;   // keeps both alive
         double   position{0.0};   // frames into the sample
         double   rate{1.0};       // sample frames per output frame
         float    level{0.0f};     // velocity
@@ -212,7 +216,8 @@ private:
     void   reset_voices();
     void   start_note(uint8_t channel, uint8_t pitch, uint8_t velocity);
     void   release_note(uint8_t channel, uint8_t pitch);
-    double rate_for(const Sample& sample, uint8_t pitch, float bend) const;
+    double rate_for(const Sample& sample, const Zone& zone, uint8_t pitch,
+                    float bend) const;
     static float sample_at(const Sample& sample, double position);
     /** Advances one voice's envelope, returning false when it has finished. */
     bool   advance_envelope(Voice& v) const;
