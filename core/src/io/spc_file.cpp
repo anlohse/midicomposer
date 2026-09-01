@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 namespace midi_composer::io {
 
@@ -42,9 +43,13 @@ constexpr size_t kMaxEntries = 256;
 constexpr int kAssumedRootKey = 60;
 constexpr int kChipSampleRate = 32000;
 
-// Below this a "sample" is a directory entry pointing at something that is not
-// a sample -- uninitialised memory, or the driver's own data.
-constexpr size_t kMinimumSamples = 32;
+// One full block. Below this there is nothing to have decoded.
+constexpr size_t kMinimumSamples = 16;
+
+// The block size, needed here as well as in the decoder: a loop address that is
+// not a multiple of it away from the start cannot be a block boundary, and so
+// cannot be a loop point.
+constexpr size_t kBrrBlockBytes = 9;
 
 base::Error bad(const std::string& what) {
     return base::Error{base::ErrorCode::ParseFailure, "Not a usable SPC file: " + what};
@@ -80,6 +85,7 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
     bank->name = name;
 
     int program = 0;
+    std::set<uint16_t> seen_starts;
     for (size_t entry = 0; entry < kMaxEntries && program < 128; ++entry) {
         const size_t at = directory + entry * kDirEntryBytes;
         if (at + kDirEntryBytes > aram.size()) break;
@@ -92,13 +98,35 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         // nothing between.
         if (start == 0) continue;
 
-        auto decoded = decode_brr(aram, start, loop >= start ? static_cast<int>(loop) : -1);
+        // The same sample reached twice. Real directories alias entries, and
+        // offering the identical instrument under two programs is noise.
+        if (!seen_starts.insert(start).second) continue;
+
+        auto decoded = decode_brr(aram, start, static_cast<int>(loop));
         if (decoded.samples.size() < kMinimumSamples) continue;
         if (!decoded.ended) {
             // Ran to the end of ARAM without an end flag: the entry pointed at
             // something that is not a sample.
             continue;
         }
+
+        // ── What separates an instrument from a coincidence ──────────────────
+        //
+        // A directory page is 256 entries whether or not the game filled them,
+        // and the rest is whatever memory was there. Around 90 of those stale
+        // entries per file happen to point at bytes with an end flag somewhere
+        // near, so "it decodes" is not a test at all -- it produced four times
+        // too many instruments, most of them a millisecond of noise.
+        //
+        // The loop address is the test. On real hardware it has to point at a
+        // BRR block *inside the sample it belongs to*, which means within the
+        // bytes just decoded and a whole number of blocks from the start. Stale
+        // entries fail this immediately: their loop points tens of kilobytes
+        // away, at no boundary in particular. It takes Chrono Trigger from
+        // about a hundred entries a file to about twenty-six, which is what a
+        // game of that size actually loads.
+        if (loop < start || loop >= start + decoded.bytes_used) continue;
+        if ((loop - start) % kBrrBlockBytes != 0) continue;
 
         Sample sample;
         sample.name = "Sample " + std::to_string(entry);

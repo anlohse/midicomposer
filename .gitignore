@@ -45,3 +45,6 @@ Thumbs.db
 
 # Installer output
 /installer/output/
+
+# Real sample banks and rips for testing. Not ours to redistribute.
+dont_commit/

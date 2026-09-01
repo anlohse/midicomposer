@@ -95,6 +95,7 @@ BrrDecoded decode_brr(const std::vector<uint8_t>& data, size_t start_offset, int
         at += kBlockBytes;
         if (end) { out.ended = true; break; }
     }
+    out.bytes_used = at - start_offset;
 
     // A loop that pointed past everything decoded is no loop at all rather than
     // an index nothing can use.

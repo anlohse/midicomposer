@@ -34,6 +34,11 @@ struct BrrDecoded {
     /** Whether an end-flagged block was reached. A run of BRR with no end flag
         is a sample that runs into whatever memory follows it. */
     bool ended{false};
+
+    /** How many bytes were consumed. What lets a caller check that a declared
+        loop address points inside this sample rather than off into memory --
+        the test that separates a directory entry from a coincidence. */
+    size_t bytes_used{0};
 };
 
 /**
