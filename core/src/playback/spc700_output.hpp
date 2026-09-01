@@ -4,6 +4,7 @@
 #include "playback/sample_bank.hpp"
 
 #include <array>
+#include <vector>
 #include <atomic>
 #include <functional>
 #include <cstdint>
@@ -102,7 +103,11 @@ public:
     // ── AudioSource ──────────────────────────────────────────────────────────
 
     [[nodiscard]] int sample_rate() const override { return m_sample_rate; }
-    void set_sample_rate(int rate) { if (rate > 0) m_sample_rate = rate; }
+    void set_sample_rate(int rate) {
+        if (rate <= 0) return;
+        m_sample_rate = rate;
+        resize_echo_line();
+    }
     void begin_block(int64_t start_us) override;
     void render(float* interleaved, int frames) override;
     [[nodiscard]] int tail_frames() const override;
@@ -175,6 +180,22 @@ private:
         int   program{0};
     };
 
+    // The longest line the chip allows, so the buffer is sized once and never
+    // grown. Allocating on the audio thread to make room for a longer echo
+    // would be a dropout exactly when the sound changed.
+    static constexpr int kMaxEchoMs = 240;
+
+    /**
+     * One frame through the echo, in place.
+     *
+     * The chip's arrangement rather than a reverb of our own: read the line,
+     * run the eight-tap FIR across what comes out, add that to the output, and
+     * write the dry signal plus the filtered echo back in. The filter being
+     * inside the feedback path is what makes repeats darken instead of just
+     * fading, and is most of why this sounds like a room.
+     */
+    void apply_echo(const EchoSettings& echo, float& left, float& right);
+
     // Steps of fractional position the interpolation kernel is tabulated at.
     // A power of two so the lookup is a mask rather than a clamp.
     static constexpr size_t kGaussSteps = 256;
@@ -207,6 +228,16 @@ private:
     std::shared_ptr<const SampleBank> m_bank;         // guarded by m_bank_mutex
     std::string m_bank_path;                          // guarded by m_bank_mutex
     BankLoader m_loader;
+
+    // Audio thread only. Sized for the longest delay at the current rate, and
+    // used from the start for however much of it the settings ask for.
+    std::vector<float> m_echo_line;      // interleaved stereo
+    int m_echo_frames{0};                // what the line currently delays by
+    int m_echo_write{0};
+    std::array<float, 8> m_fir_left{};   // the last eight reads, newest first
+    std::array<float, 8> m_fir_right{};
+
+    void resize_echo_line();
 
     int m_sample_rate{48000};
     std::atomic<int>      m_active_voices{0};

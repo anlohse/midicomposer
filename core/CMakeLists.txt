@@ -243,6 +243,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
     add_executable(midi_composer_tests
         tests/main.cpp
         tests/clap_tests.cpp
+        tests/echo_tests.cpp
         tests/edit_service_tests.cpp
         tests/file_filter_tests.cpp
         tests/metronome_tests.cpp

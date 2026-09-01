@@ -48,6 +48,39 @@ struct Sample {
 };
 
 /**
+ * The chip's echo, as a game set it up.
+ *
+ * Unlike the interpolation kernel and the ADSR rates, none of this is hardware
+ * data we would have to know: it is *per game*, and it sits in the DSP
+ * registers of any `.spc`. The echo a piece was written with is therefore
+ * recoverable from the rip, taps and all, which is why this travels with the
+ * bank rather than being a setting of the output.
+ *
+ * The eight FIR taps are the part that gives a game's echo its character --
+ * most set them to a gentle low-pass so repeats get darker rather than merely
+ * quieter, which is a large part of why SNES reverb sounds like a room instead
+ * of a delay pedal.
+ */
+struct EchoSettings {
+    bool enabled{false};
+
+    /** How far back the line reads, in milliseconds. The chip allows 0 to 240
+        in steps of 16; this is whatever the rip declared. */
+    int delay_ms{0};
+
+    /** How much of the filtered echo is written back in. Near 1 the line never
+        decays, which the chip permits and a game does not use. */
+    float feedback{0.0f};
+
+    /** How much of the echo reaches the output, per side. */
+    float volume_left{0.0f};
+    float volume_right{0.0f};
+
+    /** Eight taps applied across the delayed signal, oldest last. */
+    std::array<float, 8> fir{};
+};
+
+/**
  * A set of samples plus the mapping a program change needs.
  *
  * One sample per program rather than key-ranged layers: a layered instrument is
@@ -62,6 +95,9 @@ struct SampleBank {
 
     /** What to call this in the UI -- the file's own name, usually. */
     std::string name;
+
+    /** The echo the rip was playing through, when there was one. */
+    EchoSettings echo;
 
     SampleBank() { program_to_sample.fill(-1); }
 

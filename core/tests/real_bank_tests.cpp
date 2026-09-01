@@ -147,6 +147,47 @@ TEST_CASE("every real .spc rips") {
     CHECK(ripped == files.size());
 }
 
+TEST_CASE("the echo a real rip declares is a usable echo") {
+    const auto files = files_with(".spc");
+    if (files.empty()) {
+        MESSAGE("No .spc found; set MC_BANK_DIR to run this against real rips");
+        return;
+    }
+
+    // The register map for the echo is believed rather than demonstrated -- only
+    // $5D is confirmed by this project's own results. If the map were wrong the
+    // values would be noise, so this asks whether ninety-two independent files
+    // agree on something a chip could mean.
+    size_t with_echo = 0;
+    int shortest = 10000;
+    int longest = 0;
+    double feedback_sum = 0.0;
+    for (const auto& file : files) {
+        const auto bank = io::load_spc(file);
+        if (!bank) continue;
+        const auto& echo = (*bank)->echo;
+        if (!echo.enabled) continue;
+        ++with_echo;
+        shortest = std::min(shortest, echo.delay_ms);
+        longest = std::max(longest, echo.delay_ms);
+        feedback_sum += echo.feedback;
+
+        // Everything the chip can mean, and nothing it cannot.
+        CHECK(echo.delay_ms > 0);
+        CHECK(echo.delay_ms <= 240);
+        CHECK(std::abs(echo.feedback) <= 1.0f);
+        CHECK(std::abs(echo.volume_left) <= 1.0f);
+        CHECK(std::abs(echo.volume_right) <= 1.0f);
+    }
+    MESSAGE(with_echo, " of ", files.size(), " rips declare an echo; delays ",
+            shortest, " to ", longest, "ms, mean feedback ",
+            with_echo ? feedback_sum / static_cast<double>(with_echo) : 0.0);
+
+    // A soundtrack where nothing used the echo would mean the map is wrong:
+    // reverb is most of what a SNES score sounds like.
+    CHECK(with_echo > files.size() / 2);
+}
+
 TEST_CASE("a real rip plays across the whole keyboard") {
     const auto files = files_with(".spc");
     if (files.empty()) {
