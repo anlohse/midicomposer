@@ -29,6 +29,33 @@ constexpr size_t kMinimumSize  = kDspOffset + kDspSize;
 // directory is what makes ripping deterministic rather than a search.
 constexpr size_t kDspDir = 0x5D;
 
+// The echo, which unlike the interpolation kernel and the ADSR rates is *data
+// in this file* rather than hardware we would have to know. A game set these,
+// and the piece was written to sound through them.
+//
+// The register numbers come from the DSP's documented map. Only $5D is
+// confirmed by this project's own results -- it finds sample directories at
+// sensible addresses across ninety-two files -- so the ones below are believed
+// rather than demonstrated, and the values they yield are range-checked instead
+// of trusted.
+constexpr size_t kDspEchoVolumeLeft  = 0x2C;
+constexpr size_t kDspEchoVolumeRight = 0x3C;
+constexpr size_t kDspFlags           = 0x6C;   // bit 5 disables the echo
+constexpr size_t kDspEchoFeedback    = 0x0D;
+constexpr size_t kDspEchoDelay       = 0x7D;   // steps of 16ms, 0 to 15
+constexpr size_t kDspFirBase         = 0x0F;   // then $1F, $2F ... $7F
+
+constexpr uint8_t kFlagEchoDisabled = 0x20;
+
+// The chip's echo delay register counts in sixteenths of a second's sixteenth.
+constexpr int kEchoDelayStepMs = 16;
+
+// Signed eighth-bit registers are read as a fraction of 128, which is the
+// chip's own scaling for volumes, feedback and filter taps alike.
+float to_signed_fraction(uint8_t raw) {
+    return static_cast<float>(static_cast<int8_t>(raw)) / 128.0f;
+}
+
 // A directory entry is four bytes: start address, then loop address, both
 // little-endian pointers into ARAM.
 constexpr size_t kDirEntryBytes = 4;
@@ -189,8 +216,39 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         ++program;
     }
 
+    // ── The echo the game was playing through ────────────────────────────────
+    //
+    // Range-checked rather than trusted: these registers are read from a
+    // snapshot of running hardware, and a value outside what the chip can mean
+    // says the register map is wrong here rather than that the game did
+    // something clever.
+    const int delay_steps = dsp[kDspEchoDelay] & 0x0F;
+    auto& echo = bank->echo;
+    echo.enabled = (dsp[kDspFlags] & kFlagEchoDisabled) == 0 && delay_steps > 0;
+    echo.delay_ms = delay_steps * kEchoDelayStepMs;
+    echo.feedback = to_signed_fraction(dsp[kDspEchoFeedback]);
+    echo.volume_left = to_signed_fraction(dsp[kDspEchoVolumeLeft]);
+    echo.volume_right = to_signed_fraction(dsp[kDspEchoVolumeRight]);
+    for (size_t tap = 0; tap < echo.fir.size(); ++tap) {
+        echo.fir[tap] = to_signed_fraction(dsp[kDspFirBase + tap * 0x10]);
+    }
+
+    // A filter with gain far above one inside a feedback path runs away, and
+    // the chip's own wrapping is not something to reproduce into a wav file.
+    float fir_gain = 0.0f;
+    for (float tap : echo.fir) fir_gain += std::abs(tap);
+    if (fir_gain * std::abs(echo.feedback) >= 1.0f) {
+        MC_LOG_WARN("{}: the echo would not decay (filter gain {:.2f}, feedback {:.2f});"
+                    " leaving it off", name, fir_gain, echo.feedback);
+        echo.enabled = false;
+    }
+
     if (bank->empty()) {
         return std::unexpected(bad("no samples were found at the directory the DSP names"));
+    }
+    if (echo.enabled) {
+        MC_LOG_INFO("{}: echo {}ms, feedback {:.2f}, volume {:.2f}/{:.2f}", name,
+                    echo.delay_ms, echo.feedback, echo.volume_left, echo.volume_right);
     }
     MC_LOG_INFO("Ripped {}: {} samples from the directory at ${:04X}", name,
                 bank->samples.size(), directory);

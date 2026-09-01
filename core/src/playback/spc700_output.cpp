@@ -27,7 +27,68 @@ bool Spc700Output::EventQueue::pop(Event& out) {
 
 // ── Construction and the bank ────────────────────────────────────────────────
 
-Spc700Output::Spc700Output() = default;
+Spc700Output::Spc700Output() { resize_echo_line(); }
+
+void Spc700Output::resize_echo_line() {
+    // Room for the longest delay the chip allows, once. The settings then use
+    // however much of it they ask for, so changing a rip's echo never allocates.
+    const size_t frames = static_cast<size_t>(kMaxEchoMs) * m_sample_rate / 1000 + 1;
+    m_echo_line.assign(frames * 2, 0.0f);
+    m_echo_frames = 0;
+    m_echo_write = 0;
+    m_fir_left.fill(0.0f);
+    m_fir_right.fill(0.0f);
+}
+
+void Spc700Output::apply_echo(const EchoSettings& echo, float& left, float& right) {
+    const int frames = std::min(echo.delay_ms * m_sample_rate / 1000,
+                                static_cast<int>(m_echo_line.size() / 2) - 1);
+    if (frames <= 0) return;
+
+    if (frames != m_echo_frames) {
+        // The line length changed under us -- a different rip, usually. Start
+        // it clear rather than reading whatever the old length left behind,
+        // which would arrive as a burst of the previous piece.
+        m_echo_frames = frames;
+        m_echo_write = 0;
+        std::fill(m_echo_line.begin(), m_echo_line.end(), 0.0f);
+        m_fir_left.fill(0.0f);
+        m_fir_right.fill(0.0f);
+    }
+
+    // Read where we are about to write: the whole buffer is the delay.
+    const size_t at = static_cast<size_t>(m_echo_write) * 2;
+    const float delayed_left = m_echo_line[at];
+    const float delayed_right = m_echo_line[at + 1];
+
+    // Newest first, so tap 0 weights the most recent sample out of the line.
+    for (int i = 7; i > 0; --i) {
+        m_fir_left[static_cast<size_t>(i)] = m_fir_left[static_cast<size_t>(i - 1)];
+        m_fir_right[static_cast<size_t>(i)] = m_fir_right[static_cast<size_t>(i - 1)];
+    }
+    m_fir_left[0] = delayed_left;
+    m_fir_right[0] = delayed_right;
+
+    float filtered_left = 0.0f;
+    float filtered_right = 0.0f;
+    for (size_t i = 0; i < 8; ++i) {
+        filtered_left += m_fir_left[i] * echo.fir[i];
+        filtered_right += m_fir_right[i] * echo.fir[i];
+    }
+
+    // Written back before the echo is added to the output, so a voice hears
+    // itself once per pass rather than twice.
+    m_echo_line[at] = std::clamp(left + filtered_left * echo.feedback, -4.0f, 4.0f);
+    m_echo_line[at + 1] = std::clamp(right + filtered_right * echo.feedback, -4.0f, 4.0f);
+    // Clamped rather than trusted: the filter can have gain above one, and with
+    // feedback near one that compounds every pass. The chip wraps here; a
+    // rendered file would rather be loud than be a square wave.
+
+    left += filtered_left * echo.volume_left;
+    right += filtered_right * echo.volume_right;
+
+    m_echo_write = (m_echo_write + 1) % m_echo_frames;
+}
 
 void Spc700Output::set_bank(std::shared_ptr<const SampleBank> bank) {
     {
@@ -403,6 +464,13 @@ void Spc700Output::render(float* interleaved, int frames) {
             right += amp * std::sqrt(ch.pan);
         }
 
+        // After the voices and before the output clip, which is where the chip
+        // puts it: the echo carries what was played, and what comes back is
+        // subject to the same ceiling as everything else.
+        if (m_block_bank && m_block_bank->echo.enabled) {
+            apply_echo(m_block_bank->echo, left, right);
+        }
+
         interleaved[i * 2]     = std::clamp(left, -1.0f, 1.0f);
         interleaved[i * 2 + 1] = std::clamp(right, -1.0f, 1.0f);
     }
@@ -418,6 +486,16 @@ int Spc700Output::tail_frames() const {
     float longest = 0.1f;
     if (const auto bank = this->bank()) {
         for (const auto& s : bank->samples) longest = std::max(longest, s.release);
+        if (bank->echo.enabled) {
+            // The echo has to run out too, or a rendered file ends by cutting
+            // the tail off the last chord. How long it takes depends on the
+            // feedback: at 0.5 a repeat is inaudible after a handful of passes,
+            // at 0.9 it takes dozens.
+            const float passes = bank->echo.feedback >= 0.99f
+                                     ? 40.0f
+                                     : std::min(40.0f, 7.0f / (1.0f - std::abs(bank->echo.feedback)));
+            longest = std::max(longest, passes * bank->echo.delay_ms / 1000.0f);
+        }
     }
     return static_cast<int>(longest * m_sample_rate) + m_sample_rate / 10;
 }
