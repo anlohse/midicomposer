@@ -1,5 +1,7 @@
 #include "application.hpp"
+#include "app/preferences.hpp"
 #include "base/logger.hpp"
+#include "shell/crash_report.hpp"
 #include "shell/file_dialogs.hpp"
 #include "shell/ui_bundle.hpp"
 #include "ui_bridge/bridge_dispatcher.hpp"
@@ -8,6 +10,7 @@
 #include <memory>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <string>
 
 namespace {
@@ -40,6 +43,33 @@ void log_webview_environment() {
 }
 
 /**
+ * The folder the webview will keep its profile in, created and checked first.
+ *
+ * Creating the webview fails if this folder cannot be written, and it fails
+ * through an asynchronous callback that hands back a null environment which
+ * saucer dereferences without checking -- so the process dies with an access
+ * violation and no explanation of the actual problem. Testing the folder here
+ * turns that into a sentence.
+ *
+ * An empty return means "no opinion": the library falls back to its own
+ * choice, which is better than refusing to start over a directory.
+ */
+std::filesystem::path prepared_storage_path() {
+    const auto folder = midi_composer::app::Preferences::webview_storage_folder();
+    if (folder.empty()) return {};
+
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    if (ec) {
+        MC_LOG_WARN("Could not create the webview folder {}: {}",
+                    folder.string(), ec.message());
+        return {};
+    }
+    MC_LOG_INFO("  webview profile = {}", folder.string());
+    return folder;
+}
+
+/**
  * Reports a startup failure instead of vanishing.
  *
  * Everything below runs before there is a window, so anything that throws here
@@ -63,17 +93,27 @@ void log_webview_environment() {
 int main() {
     midi_composer::shell::Application app_context;
     app_context.initialize();
+    // Before anything that can fail, so a fault during startup is described
+    // rather than silent.
+    midi_composer::shell::install_crash_reporting();
+    midi_composer::shell::log_process_context();
     app_context.core().initialize();
 
     // The webview is created here, and creating it is the step most likely to
     // fail on a machine rather than in the code: it needs the WebView2 runtime
-    // present, and it needs its user data folder, which another instance --
-    // including one whose parent has already died -- may still hold.
+    // present, and it needs a profile folder it can write. When that folder is
+    // unusable the failure comes back through a callback carrying a null
+    // environment, and saucer dereferences it -- so the whole process dies at
+    // this line with an access violation. Hence the log lines around it.
     log_webview_environment();
+    MC_LOG_INFO("Main thread apartment before the webview: {}",
+                midi_composer::shell::current_apartment());
+    const auto storage_path = prepared_storage_path();
     MC_LOG_INFO("Creating the webview");
     std::unique_ptr<saucer::smartview<>> view_holder;
     try {
-        view_holder = std::make_unique<saucer::smartview<>>();
+        view_holder = std::make_unique<saucer::smartview<>>(
+            saucer::options{.storage_path = storage_path});
     } catch (const std::exception& e) {
         die("creating the webview", e.what());
     } catch (...) {
@@ -82,6 +122,9 @@ int main() {
     }
     auto& view = *view_holder;
     MC_LOG_INFO("Webview created");
+    // The WebView2 runtime is loaded now, and it brings its own crash handler.
+    midi_composer::shell::reassert_crash_reporting("the WebView2 runtime");
+    midi_composer::shell::test_crash_if_asked("after-webview");
 
     view.on<saucer::window_event::close>([&app_context]() -> bool {
         app_context.core().shutdown();
