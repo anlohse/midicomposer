@@ -45,8 +45,9 @@ struct Sample {
 /**
  * One recording, played one way, over one part of the keyboard.
  *
- * A program is a list of these. The first whose ranges contain the note is the
- * one used -- see `SampleBank::zone_for`.
+ * A program is a list of these, and a note starts every one whose ranges
+ * contain it -- usually exactly one, sometimes several stacked on purpose. See
+ * `SampleBank::zones_for`.
  */
 struct Zone {
     /** Index into `SampleBank::samples`. */
@@ -86,6 +87,20 @@ struct Zone {
     float sustain_rate{0.0f};
 
     float release{0.08f};
+
+    /**
+     * How loud this zone is, 1.0 being the recording as it stands.
+     *
+     * A SoundFont states an attenuation per zone and expects it applied. It
+     * matters most where zones stack: a preset that layers two instruments
+     * would otherwise arrive at twice the level of a plain one, and a bank
+     * that layers on purpose sets the attenuation that pays for it.
+     *
+     * One, meaning untouched, is what a rip means -- the chip has a per-voice
+     * volume, but a snapshot's value belongs to the note that voice was
+     * playing rather than to the sample.
+     */
+    float gain{1.0f};
 
     /**
      * Whether this instrument reaches the echo at all.
@@ -161,6 +176,38 @@ struct SampleBank {
      * partition the keyboard, and where they overlap the format says the first
      * applies. Ranking them would invent a rule the file did not state.
      */
+    /**
+     * Every zone a note starts, not just the first one that fits.
+     *
+     * Zones stack. A preset may name several instruments to sound together,
+     * and a single instrument may cover one key and velocity twice -- across
+     * the 128 programs of a General MIDI bank ripped from SNES games, 19 do,
+     * costing up to four voices for one note. Taking the first match silently
+     * drops the rest, which is not a thinner sound so much as a different one:
+     * the layer that was dropped is often the body under a transient.
+     *
+     * Writes into storage the caller owns and returns how many it filled. This
+     * runs on the audio thread, where a vector would be an allocation, and the
+     * ceiling is the caller's: a note cannot cost more voices than the chip
+     * has, so passing the voice count is the natural bound. Zones past it are
+     * dropped here rather than left to steal each other.
+     */
+    [[nodiscard]] int zones_for(int program, int key, int velocity, const Zone** out,
+                                int capacity) const {
+        if (program < 0 || program > 127 || !out || capacity <= 0) return 0;
+        int found = 0;
+        for (const auto& zone : programs[static_cast<size_t>(program)].zones) {
+            if (key < zone.low_key || key > zone.high_key) continue;
+            if (velocity < zone.low_velocity || velocity > zone.high_velocity) continue;
+            if (zone.sample < 0 || zone.sample >= static_cast<int>(samples.size())) continue;
+            out[found++] = &zone;
+            if (found == capacity) break;
+        }
+        return found;
+    }
+
+    /** The first zone a note would start. `zones_for` is what plays it; this is
+        for asking what a program does with a key without meaning to sound it. */
     [[nodiscard]] const Zone* zone_for(int program, int key, int velocity) const {
         if (program < 0 || program > 127) return nullptr;
         for (const auto& zone : programs[static_cast<size_t>(program)].zones) {

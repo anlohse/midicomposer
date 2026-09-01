@@ -61,6 +61,25 @@ struct ZoneSpec {
     uint8_t  high_velocity{127};
 };
 
+/** One instrument: the zones it owns, or bare generators when it has one
+    zone and the test only cares what that zone says. */
+struct InstrumentSpec {
+    std::vector<ZoneSpec> zones;
+    std::vector<Zone>     generators;
+};
+
+/** One preset zone: which instrument it names, over what part of the keyboard,
+    and the generators the preset lays on top of that instrument's own. Several
+    of these is a preset that layers. */
+struct PresetZoneSpec {
+    uint16_t instrument{0};
+    uint8_t  low_key{0};
+    uint8_t  high_key{127};
+    uint8_t  low_velocity{0};
+    uint8_t  high_velocity{127};
+    std::vector<Zone> generators;
+};
+
 struct FontSpec {
     std::vector<int16_t> audio{0, 8000, 16000, 8000, 0, -8000, -16000, -8000};
     uint16_t program{0};
@@ -77,6 +96,15 @@ struct FontSpec {
 
     /** Several zones instead, which is what a real instrument has. */
     std::vector<ZoneSpec> zones;
+
+    /** More than one instrument, for a preset that layers them. Empty means the
+        single instrument described by `zones` / `instrument_generators`. */
+    std::vector<InstrumentSpec> instruments;
+
+    /** More than one preset zone, which is how a preset layers. Empty means one
+        zone naming instrument 0 over the whole keyboard, which is the shape
+        most of these tests want. */
+    std::vector<PresetZoneSpec> preset_zones;
 };
 
 std::string build_sf2(const FontSpec& spec) {
@@ -84,6 +112,17 @@ std::string build_sf2(const FontSpec& spec) {
     std::string smpl;
     for (int16_t v : spec.audio) put16(smpl, static_cast<uint16_t>(v));
     const std::string sdta = list("sdta", chunk("smpl", smpl));
+
+    // Both levels are normalised to vectors so the writer below has one shape
+    // to deal with; the defaults are the single preset zone and single
+    // instrument that most of these tests want.
+    std::vector<PresetZoneSpec> preset_zones = spec.preset_zones;
+    if (preset_zones.empty()) preset_zones.push_back({});
+
+    std::vector<InstrumentSpec> instruments = spec.instruments;
+    if (instruments.empty()) {
+        instruments.push_back({spec.zones, spec.instrument_generators});
+    }
 
     // phdr: one preset, then the terminal EOP record.
     std::string phdr;
@@ -94,57 +133,85 @@ std::string build_sf2(const FontSpec& spec) {
     put32(phdr, 0); put32(phdr, 0); put32(phdr, 0);   // library, genre, morphology
     put_name(phdr, "EOP");
     put16(phdr, 0); put16(phdr, 0);
-    put16(phdr, 1);              // one past the last bag
+    put16(phdr, static_cast<uint16_t>(preset_zones.size()));   // one past the last bag
     put32(phdr, 0); put32(phdr, 0); put32(phdr, 0);
 
-    // pbag: one zone, then the terminal.
+    // pbag and pgen: one bag per preset zone, then the terminal. Ranges are
+    // written only when they say something, which is what a real font does --
+    // and it keeps the single-zone default byte for byte what it was.
     std::string pbag;
-    put16(pbag, 0); put16(pbag, 0);
-    put16(pbag, 1); put16(pbag, 0);
+    std::string pgen;
+    uint16_t preset_generator_count = 0;
+    for (const auto& zone : preset_zones) {
+        put16(pbag, preset_generator_count); put16(pbag, 0);
+        if (zone.low_key != 0 || zone.high_key != 127) {
+            put16(pgen, 43);
+            put16(pgen, static_cast<uint16_t>(zone.low_key | (zone.high_key << 8)));
+            ++preset_generator_count;
+        }
+        if (zone.low_velocity != 0 || zone.high_velocity != 127) {
+            put16(pgen, 44);
+            put16(pgen, static_cast<uint16_t>(zone.low_velocity | (zone.high_velocity << 8)));
+            ++preset_generator_count;
+        }
+        for (const auto& generator : zone.generators) {
+            put16(pgen, generator.op); put16(pgen, generator.amount);
+            ++preset_generator_count;
+        }
+        // instrument has to be last, as the format requires of a preset zone:
+        // it is what ends the zone.
+        put16(pgen, 41); put16(pgen, zone.instrument);
+        ++preset_generator_count;
+    }
+    put16(pbag, preset_generator_count); put16(pbag, 0);   // the terminal bag
+    put16(pgen, 0); put16(pgen, 0);                        // the terminal generator
 
     std::string pmod(10, '\0');   // the terminal modulator; never read here
 
-    // pgen: the preset zone names instrument 0, then the terminal.
-    std::string pgen;
-    put16(pgen, 41); put16(pgen, 0);        // instrument = 0
-    put16(pgen, 0);  put16(pgen, 0);
-
-    // inst: one instrument, then EOI. The terminal record's bag index is one
-    // past the last bag the instrument owns, so it is what says how many zones
-    // there are -- leaving it at 1 hides every zone after the first.
-    const auto zone_count = static_cast<uint16_t>(spec.zones.empty() ? 1 : spec.zones.size());
-    std::string inst;
-    put_name(inst, "Test Instrument");
-    put16(inst, 0);
-    put_name(inst, "EOI");
-    put16(inst, zone_count);
-
+    // inst: one record per instrument, then EOI. The terminal record's bag index
+    // is one past the last bag any instrument owns, so it is what says how many
+    // zones there are -- leaving it at 1 hides every zone after the first.
+    //
     // ibag and igen: one bag per zone, each pointing at where its generators
     // start, then a terminal bag pointing one past the last generator.
+    std::string inst;
     std::string ibag;
     std::string igen;
     uint16_t generator_count = 0;
-    if (spec.zones.empty()) {
-        put16(ibag, 0); put16(ibag, 0);
-        for (const auto& z : spec.instrument_generators) {
-            put16(igen, z.op); put16(igen, z.amount); ++generator_count;
-        }
-        put16(igen, 53); put16(igen, 0); ++generator_count;   // sampleID last
-    } else {
-        for (const auto& zone : spec.zones) {
+    uint16_t bag_count = 0;
+    for (size_t i = 0; i < instruments.size(); ++i) {
+        put_name(inst, "Test Instrument " + std::to_string(i));
+        put16(inst, bag_count);
+
+        const auto& instrument = instruments[i];
+        if (instrument.zones.empty()) {
             put16(ibag, generator_count); put16(ibag, 0);
-            // keyRange and velRange pack low in the low byte, high in the high.
-            put16(igen, 43);
-            put16(igen, static_cast<uint16_t>(zone.low_key | (zone.high_key << 8)));
-            put16(igen, 44);
-            put16(igen, static_cast<uint16_t>(zone.low_velocity | (zone.high_velocity << 8)));
-            put16(igen, 58); put16(igen, zone.root);          // overridingRootKey
-            // sampleID has to be last, as the format requires of an instrument
-            // zone: it is what ends the zone.
-            put16(igen, 53); put16(igen, zone.sample_id);
-            generator_count = static_cast<uint16_t>(generator_count + 4);
+            ++bag_count;
+            for (const auto& generator : instrument.generators) {
+                put16(igen, generator.op); put16(igen, generator.amount);
+                ++generator_count;
+            }
+            put16(igen, 53); put16(igen, 0); ++generator_count;   // sampleID last
+        } else {
+            for (const auto& zone : instrument.zones) {
+                put16(ibag, generator_count); put16(ibag, 0);
+                ++bag_count;
+                // keyRange and velRange pack low in the low byte, high in the high.
+                put16(igen, 43);
+                put16(igen, static_cast<uint16_t>(zone.low_key | (zone.high_key << 8)));
+                put16(igen, 44);
+                put16(igen, static_cast<uint16_t>(zone.low_velocity | (zone.high_velocity << 8)));
+                put16(igen, 58); put16(igen, zone.root);          // overridingRootKey
+                // sampleID has to be last, as the format requires of an
+                // instrument zone: it is what ends the zone.
+                put16(igen, 53); put16(igen, zone.sample_id);
+                generator_count = static_cast<uint16_t>(generator_count + 4);
+            }
         }
     }
+    put_name(inst, "EOI");
+    put16(inst, bag_count);
+
     put16(ibag, generator_count); put16(ibag, 0);   // the terminal bag
     put16(igen, 0); put16(igen, 0);                 // the terminal generator
 
@@ -407,4 +474,139 @@ TEST_CASE("zones sharing one recording decode it once") {
     CHECK((*bank)->programs[0].zones.size() == 2);
     CHECK((*bank)->samples.size() == 1);
     CHECK((*bank)->programs[0].zones[0].sample == (*bank)->programs[0].zones[1].sample);
+}
+
+// ── Layering ─────────────────────────────────────────────────────────────────
+//
+// A preset may name several instruments to sound together, and until these
+// tests existed only the first was taken. Seven of the 128 programs in
+// ExpressiveSNES.sf2 layer that way, all of them covering the whole keyboard
+// twice over -- Honky-tonk is two pianos a few cents apart, and one of the two
+// is just a piano.
+
+TEST_CASE("a preset naming two instruments keeps both") {
+    FontSpec spec;
+    spec.instruments = {
+        {{ZoneSpec{.root = 60}}, {}},
+        {{ZoneSpec{.root = 72}}, {}},
+    };
+    spec.preset_zones = {{.instrument = 0}, {.instrument = 1}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    REQUIRE((*bank)->programs[0].zones.size() == 2);
+
+    // Both answer the same note, which is what layering means.
+    const playback::Zone* matched[8] = {};
+    CHECK((*bank)->zones_for(0, 60, 100, matched, 8) == 2);
+    CHECK(matched[0]->root_key == 60);
+    CHECK(matched[1]->root_key == 72);
+}
+
+TEST_CASE("a preset zone narrows the instrument it names") {
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{.low_key = 0, .high_key = 127}}, {}}};
+    spec.preset_zones = {{.instrument = 0, .low_key = 60, .high_key = 72}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    REQUIRE((*bank)->programs[0].zones.size() == 1);
+
+    // The narrower of the two wins on each side: the preset says where its
+    // instrument applies, the instrument says which sample covers what.
+    CHECK((*bank)->programs[0].zones[0].low_key == 60);
+    CHECK((*bank)->programs[0].zones[0].high_key == 72);
+    CHECK((*bank)->zone_for(0, 59, 100) == nullptr);
+    CHECK((*bank)->zone_for(0, 66, 100) != nullptr);
+    CHECK((*bank)->zone_for(0, 73, 100) == nullptr);
+}
+
+TEST_CASE("a zone the preset excludes is absent, not silent") {
+    FontSpec spec;
+    // Two zones splitting the keyboard, and a preset that only reaches the low
+    // one. The high zone must not arrive at all -- a zone with a backwards
+    // range would match nothing, but it would still be counted and named.
+    spec.instruments = {{{ZoneSpec{.low_key = 0, .high_key = 59},
+                         ZoneSpec{.low_key = 60, .high_key = 127}}, {}}};
+    spec.preset_zones = {{.instrument = 0, .low_key = 0, .high_key = 50}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->programs[0].zones.size() == 1);
+    CHECK((*bank)->programs[0].zones[0].high_key == 50);
+}
+
+TEST_CASE("velocity narrows the same way keys do") {
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{.low_velocity = 0, .high_velocity = 127}}, {}}};
+    spec.preset_zones = {{.instrument = 0, .low_velocity = 64, .high_velocity = 127}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->zone_for(0, 60, 30) == nullptr);
+    CHECK((*bank)->zone_for(0, 60, 100) != nullptr);
+}
+
+TEST_CASE("a preset's tuning is an offset, not a replacement") {
+    FontSpec spec;
+    spec.instruments = {{{}, {Zone{52, static_cast<uint16_t>(10)}}}};   // fineTune +10
+    spec.preset_zones = {{.instrument = 0,
+                          .generators = {Zone{51, 1},                    // coarseTune +1
+                                         Zone{52, static_cast<uint16_t>(20)}}}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    const auto* zone = (*bank)->zone_for(0, 60, 100);
+    REQUIRE(zone != nullptr);
+    // 10 from the instrument plus 20 from the preset, plus a semitone the
+    // preset asked for on top.
+    CHECK(zone->fine_tune_cents == doctest::Approx(100 + 30));
+}
+
+TEST_CASE("attenuation reaches the zone as a level") {
+    FontSpec spec;
+    // 100 centibels is 10 dB down, which is a tenth of the power and about
+    // 0.316 of the amplitude.
+    spec.preset_zones = {{.instrument = 0, .generators = {Zone{48, 100}}}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    const auto* zone = (*bank)->zone_for(0, 60, 100);
+    REQUIRE(zone != nullptr);
+    CHECK(zone->gain == doctest::Approx(0.3162f).epsilon(0.01));
+}
+
+TEST_CASE("a bank that says nothing about level says one") {
+    const auto bank = io::parse_sf2(build_sf2({}), "Test");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->zone_for(0, 60, 100)->gain == doctest::Approx(1.0f));
+}
+
+TEST_CASE("an envelope offset from a preset adds in timecents, not in seconds") {
+    FontSpec spec;
+    // -7973 timecents is about 10ms; adding 1200 timecents doubles it, which
+    // adding seconds could never do.
+    spec.instruments = {{{}, {Zone{34, static_cast<uint16_t>(-7973)}}}};
+    spec.preset_zones = {{.instrument = 0, .generators = {Zone{34, 1200}}}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    const auto* zone = (*bank)->zone_for(0, 60, 100);
+    REQUIRE(zone != nullptr);
+    CHECK(zone->attack == doctest::Approx(0.02f).epsilon(0.02));
+}
+
+TEST_CASE("zones_for stops where the caller runs out of room") {
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{}}, {}}, {{ZoneSpec{}}, {}}, {{ZoneSpec{}}, {}}};
+    spec.preset_zones = {{.instrument = 0}, {.instrument = 1}, {.instrument = 2}};
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    REQUIRE((*bank)->programs[0].zones.size() == 3);
+
+    const playback::Zone* matched[2] = {};
+    // Two, not three and not a write past the end: a note cannot cost more
+    // voices than the chip has, and the ceiling belongs to the caller.
+    CHECK((*bank)->zones_for(0, 60, 100, matched, 2) == 2);
 }

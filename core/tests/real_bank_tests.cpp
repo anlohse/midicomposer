@@ -279,19 +279,39 @@ TEST_CASE("every real .sf2 loads") {
                 programs, " programs, ", multi, " of them multi-sampled");
         CHECK(programs > 0);
 
-        // Where a program has several zones they have to partition the
-        // keyboard rather than pile up on one note; a bank whose zones all
-        // covered everything would be a bank whose ranges were dropped.
+        // Ranges have to survive loading: a bank where every multi-zone program
+        // reached the whole keyboard from every zone would be a bank whose key
+        // ranges were dropped on the way in.
+        //
+        // Layering is not that. A preset naming two instruments does cover
+        // everything twice, deliberately, so this asks that *some* program
+        // partitions rather than that none stacks -- which is what the older
+        // version of this check asked, and what stopped layers being read.
+        int partitioning = 0;
+        int stacking = 0;
         for (int p = 0; p < 128; ++p) {
             const auto& program = (*bank)->programs[static_cast<size_t>(p)];
             if (program.zones.size() < 2) continue;
             const bool all_full = std::all_of(
                 program.zones.begin(), program.zones.end(),
                 [](const auto& z) { return z.low_key == 0 && z.high_key == 127; });
-            CAPTURE(p);
-            CHECK_FALSE(all_full);
-            break;
+            if (all_full) ++stacking; else ++partitioning;
         }
+        MESSAGE(file, ": ", partitioning, " programs split the keyboard, ", stacking,
+                " cover it from every zone");
+        if (multi > 0) CHECK(partitioning > 0);
+
+        // A note needing more voices than the chip has is a note that steals
+        // from itself, and the eight are what the whole piece has to share.
+        int worst = 0;
+        for (int p = 0; p < 128; ++p) {
+            for (int key = 0; key < 128; ++key) {
+                const playback::Zone* matched[16] = {};
+                worst = std::max(worst, (*bank)->zones_for(p, key, 100, matched, 16));
+            }
+        }
+        MESSAGE(file, ": at most ", worst, " zones answer one note");
+        CHECK(worst <= 8);
 
         hammer(*bank);
     }

@@ -920,12 +920,52 @@ measured: `Sample 32 (B5, 415ms, looped)`. Length separates a percussion hit
 from a held instrument at a glance, which is what turns auditioning two dozen
 unknowns into reading a list.
 
+### 11a.9a Zones stack, and the eight voices pay for it
+
+A program can answer one note with more than one zone, and two different things
+in a SoundFont produce that. A preset may name several instruments to sound
+together; an instrument may cover the same key at the same velocity twice. Both
+are layering, and until this section existed the loader took the first match and
+dropped the rest.
+
+That is not a thinner sound so much as a different one. Honky-tonk is two pianos
+a few cents apart, and one of the two is a piano. Measured across the 128
+programs of ExpressiveSNES.sf2: **seven presets name two instruments**, and in
+every one of the seven both halves cover the whole keyboard at every velocity --
+genuine stacking rather than a split keyboard. Reading them takes the bank from
+193 zones to 207, and from 135 samples to 136: one instrument was named only by
+a second layer, so its recording never arrived at all.
+
+**A note now starts every zone that answers it**, and voice stealing is left to
+do what it already did. Layering costs voices on a chip that has eight, and that
+is the honest price: the alternative is playing one layer and calling the result
+the instrument. The measured worst case in that bank is four zones for one note,
+so a two-note chord on the worst program is already most of the machine. Zones
+past the eighth are dropped when the note is built rather than left to steal one
+of the note's own layers a moment later.
+
+Three consequences that had to be handled together, because layering does not
+work without them:
+
+- **Attenuation is now read.** Two instruments sounding together arrive at twice
+  the level of one, and a bank that stacks on purpose states the attenuation
+  that pays for it. Ignoring it while honouring the layers would have made the
+  layered presets the loudest things in the bank.
+- **A preset zone narrows its instrument rather than replacing it.** The preset
+  says over what part of the keyboard its instrument applies; the instrument
+  says which of its samples covers what. The narrower of the two wins on each
+  side, and a zone the preset excludes is absent rather than silent.
+- **A generator stated at both levels is added, not chosen between.** The format
+  says the preset's value is an offset. Adding happens before conversion,
+  because timecents and centibels are logarithmic -- adding seconds or
+  amplitudes afterwards would mean something else entirely, and quietly.
+
+Worth knowing when this looks like it is doing nothing: a rip has no second
+level to offset from. Everything here is a SoundFont's doing, and `.spc` files
+come through untouched, one whole-keyboard zone per sample.
+
 ### 11a.10 Still missing
 
-- **Layered presets.** A preset may name several instruments to be played at
-  once, and only the first is taken. That is a second kind of stacking on top of
-  the key ranges, and honouring it would double the voices a note costs -- on a
-  chip with eight.
 - **A fuller envelope for a rip.** Only the samples a voice happened to name get
   the game's own -- about a fifth. The rest keep defaults.
 - **Auditioning.** A program still has to be assigned to a track and played to
