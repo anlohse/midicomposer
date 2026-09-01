@@ -837,6 +837,45 @@ Two things this cannot give and does not pretend to:
 - **A voice running GAIN instead of ADSR is skipped.** Its envelope is being
   shaped by driver code, which a snapshot cannot hand over.
 
+### 11a.6b Looking for the game's instrument table, and not finding it
+
+The obvious way to cover the other four fifths is to stop reading the eight
+voices and find the driver's own table of instruments, which would carry an
+envelope for every instrument the game defines rather than for the ones sounding
+at the instant of the snapshot. Two attempts, both measured against the ninety-two
+rips, and both refused.
+
+The strength of the idea is that **the answer can be checked**. The voices give
+several (SRCN, ADSR1, ADSR2) triples the game really configured, so any candidate
+table that does not contain them is not the table. That is a rare luxury in
+reverse engineering, and it is what makes a negative result trustworthy here.
+
+**First, assuming the layout.** The N-SPC driver -- Nintendo's, and the most
+widely used -- writes six-byte records: SRCN, ADSR1, ADSR2, GAIN, and a two-byte
+pitch multiplier. Scanning for runs of records whose SRCN resolves to a real BRR
+sample and whose ADSR bit is set finds candidates in every file. Not one of them
+contained a single one of the 522 voice configurations the same files show. The
+corpus is Chrono Trigger, which uses Square's driver rather than Nintendo's, so
+the format was simply wrong.
+
+**Then, deriving the layout.** Rather than assume a record size, look up where
+the known ADSR byte pairs actually occur in ARAM and ask what stride would put
+several of them on one grid inside a table-sized window. If a table exists, its
+record size falls out of the data.
+
+Nothing fell out. The best-fitting record size is 17 bytes for eight files, 8 for
+another eight, then 9, 3, 5, 12, 10, 4 -- no agreement, in a corpus where every
+file is the same game and therefore the same driver. Most files place only two of
+their four to seven envelopes on any grid, which is what two byte pairs landing on
+a common stride by chance looks like.
+
+**So the honest position is that this is unsolved rather than unimplemented**, and
+that a solution would have to be per-driver. It would also be unverifiable here:
+ninety-two rips of one game can show a heuristic works for that game and can never
+show it generalises. What the defaults do in the meantime is deliberate rather
+than lazy -- audible immediately and held, letting the recording carry its own
+attack and its own decay, which for a ripped sample it usually does.
+
 ### 11a.7 The echo is data, not a table
 
 Unlike the kernel and the rates, the echo is *per game* and sits in the DSP
@@ -964,13 +1003,43 @@ Worth knowing when this looks like it is doing nothing: a rip has no second
 level to offset from. Everything here is a SoundFont's doing, and `.spc` files
 come through untouched, one whole-keyboard zone per sample.
 
+### 11a.9b Hearing an instrument before choosing it
+
+Naming the programs (§11a.9) narrowed the guessing in a ripped bank; it did not
+end it. "Sample 32 (B5, 415ms, looped)" says what was measured about a recording
+and nothing about what it sounds like, and the only way to find out was to put it
+on a track and play the piece.
+
+So the instrument picker has a button that sounds one note of the program beside
+it. What makes this cheap rather than a feature of its own is that the audio
+device already runs on the wall clock rather than on the transport -- it is open
+whenever an output that makes sound is selected -- so a note sent now sounds now,
+whether or not anything is playing, and a note-off stamped for later lands on its
+own frame without anything waiting for it.
+
+Three properties it holds to, and all three are what "audition" has to mean:
+
+- **It changes nothing.** No document, no revision, no undo step, no transport.
+  Verified against the running application: the revision is the same either side
+  of the click and the transport stays stopped.
+- **It does not take a channel a track is using.** A program change *is* a
+  channel's instrument, so auditioning on an occupied channel would quietly
+  change how that track sounds. The highest free channel is used; when a project
+  fills all sixteen, the highest is borrowed and its instrument put back once the
+  note has ended.
+- **It plays through the selected output**, not through a track's route. The
+  names being auditioned come from that output's own program list, so hearing
+  them through anything else would be hearing a different instrument than the one
+  named on screen.
+
+Middle C by default, because an audition is for comparing instruments, and
+comparing them at different pitches compares the pitches.
+
 ### 11a.10 Still missing
 
-- **A fuller envelope for a rip.** Only the samples a voice happened to name get
-  the game's own -- about a fifth. The rest keep defaults.
-- **Auditioning.** A program still has to be assigned to a track and played to
-  be heard. With two dozen unknowns in a rip, the naming in §11a.9 helps and
-  does not finish the job.
+- **A fuller envelope for a rip**, with one route already closed. Only the
+  samples a voice happened to name get the game's own -- about a fifth. See
+  §11a.6b for what was tried.
 
 ## 12. Deliberately not doing
 

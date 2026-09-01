@@ -92,6 +92,48 @@ public:
     // unlike volume/pan/mute/solo/arm these go through the edit service and are
     // undoable.
     base::Result<void> set_track_channel(base::CompositionId doc_id, base::TrackId track_id, uint8_t channel);
+    /**
+     * Which channel an audition should borrow, and what to put back.
+     *
+     * An audition has to send a program change, and a program change is a
+     * channel's instrument -- so sending one on a channel a track uses would
+     * quietly change that track's sound. This picks a channel no track is on,
+     * searching from the top because a project that uses a few channels uses
+     * the low ones.
+     *
+     * When all sixteen are taken there is no free channel to find, so the
+     * highest is borrowed and `restore_program` says what it had. A track has
+     * no reason to change instrument in the half second an audition lasts.
+     *
+     * Separate and static because it is the only part of auditioning that
+     * decides anything, and the rest is three calls to a plugin.
+     */
+    struct AuditionChannel {
+        uint8_t channel{15};
+        bool    borrowed{false};
+        uint8_t restore_program{0};
+    };
+    [[nodiscard]] static AuditionChannel choose_audition_channel(
+        const music::Composition& composition);
+
+    /**
+     * Sounds one note of a program, so it can be heard before it is chosen.
+     *
+     * A ripped bank arrives as two dozen numbered unknowns, and until this
+     * existed the only way to hear one was to put it on a track and play the
+     * piece. Naming them (§11a.9) narrowed the guessing; it did not end it.
+     *
+     * Deliberately outside everything else: it touches no document, moves no
+     * transport, creates no undo step, and works whether or not anything is
+     * playing -- the audio device runs on the wall clock rather than on the
+     * transport, so a note sent now sounds now and stops on its own.
+     *
+     * `key` and `velocity` are MIDI; `milliseconds` is how long the note is
+     * held before its own note-off, which is scheduled rather than waited for.
+     */
+    base::Result<void> audition_program(base::CompositionId doc_id, uint8_t program,
+                                        uint8_t key, uint8_t velocity, int milliseconds);
+
     base::Result<void> set_track_program(base::CompositionId doc_id, base::TrackId track_id, uint8_t program);
 
     // Notation display only; never alters stored pitches.
