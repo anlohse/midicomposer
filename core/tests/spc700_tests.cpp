@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "playback/gaussian_table.hpp"
 #include "playback/spc700_output.hpp"
 
 #include <atomic>
@@ -327,4 +328,56 @@ TEST_CASE("the interpolation kernel does not change the level of a steady signal
     // nothing of its own.
     const float expected = 1.0f * 0.25f * (100.0f / 127.0f) * std::sqrt(0.5f);
     CHECK(peak == doctest::Approx(expected).epsilon(0.02));
+}
+
+TEST_CASE("the chip's interpolation table is intact") {
+    // It is data now, not code: a mistyped digit would change the sound by an
+    // amount nobody would trace back to here. These are the properties the
+    // hardware table has, checked so an edit cannot quietly break them.
+    CHECK(kGaussTable.size() == 512);
+
+    // Unity across every fractional position. Twelve-bit quantisation costs at
+    // most one count; anything further out is a transcription error.
+    for (size_t p = 0; p < 256; ++p) {
+        const int sum = kGaussTable[255 - p] + kGaussTable[511 - p] +
+                        kGaussTable[256 + p] + kGaussTable[p];
+        CAPTURE(p);
+        CHECK(sum >= kGaussUnity - 1);
+        CHECK(sum <= kGaussUnity + 1);
+    }
+
+    // A half bell: rising to the far end and never turning back.
+    for (size_t i = 1; i < kGaussTable.size(); ++i) {
+        CAPTURE(i);
+        CHECK(kGaussTable[i] >= kGaussTable[i - 1]);
+    }
+    CHECK(kGaussTable.front() == 0);
+    CHECK(kGaussTable.back() == 1305);
+}
+
+TEST_CASE("interpolating between two samples stays between them") {
+    // The gaussian's outer taps can overshoot on a step, which the chip does
+    // too -- but on a signal that is simply rising, the reading has to land in
+    // the range the neighbours describe or the kernel is indexed backwards.
+    Sample ramp;
+    ramp.data.resize(64);
+    for (size_t i = 0; i < ramp.data.size(); ++i) ramp.data[i] = static_cast<float>(i) / 64.0f;
+    ramp.root_key = 60;
+    ramp.source_rate = kRate;
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank_with(ramp));
+    REQUIRE(out.start().has_value());
+
+    // Read at a pitch that lands between frames, and check the output rises.
+    out.note_on(0, 61, 127, 0);
+    std::vector<float> buffer(48 * 2, 0.0f);
+    out.begin_block(0);
+    out.render(buffer.data(), 48);
+
+    for (int i = 1; i < 40; ++i) {
+        CAPTURE(i);
+        CHECK(buffer[static_cast<size_t>(i) * 2] >= buffer[static_cast<size_t>(i - 1) * 2]);
+    }
 }

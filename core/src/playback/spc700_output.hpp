@@ -24,21 +24,20 @@ namespace midi_composer::playback {
  * when a ninth note arrives, and a bank the user supplies. That is the shape.
  *
  * Three things make the real chip sound like itself: the gaussian interpolation
- * kernel, the ADSR rate table, and BRR decoding. None of the three is invented
- * here. Four-point Hermite and a plain seconds-based envelope stand in for the
- * first two, exactly as they do in InternalSynthOutput, and BRR belongs to
- * whatever reads an `.spc` -- by the time audio reaches a Sample it is already
- * decoded. Numbers that look authentic and are not would be worse than a stated
- * approximation, because nobody would ever check them again.
+ * kernel, the ADSR rate table, and BRR decoding. Two of the three are now the
+ * real ones -- the kernel is the chip's own 512-entry ROM table (see
+ * gaussian_table.hpp), and BRR is decoded by whatever reads an `.spc`, so audio
+ * is already decoded by the time it reaches a Sample. The envelope is still a
+ * plain seconds-based one rather than the chip's rate table, and is still
+ * described as a stand-in rather than dressed up as the real thing.
  *
  * ── Why it renders at the host's rate ────────────────────────────────────────
  *
  * The chip runs at 32kHz, and running the DSP there and resampling at the edge
- * would be the authentic arrangement. It is not done yet, because what 32kHz
- * actually changes is the gaussian kernel and the ADSR rate table -- and both
- * are stand-ins. Precision around numbers we do not have is not precision. A
- * sampler resamples inherently, so the rate is a one-line change when the real
- * tables arrive.
+ * would be the authentic arrangement. A sampler resamples inherently, so what
+ * 32kHz would actually change is the kernel's cutoff -- which is now a real
+ * consideration rather than a hypothetical, since the kernel is real. Left as
+ * it is until there is something to hear that says otherwise.
  */
 class Spc700Output final : public OutputPlugin, public AudioSource {
 public:
@@ -195,14 +194,6 @@ private:
      * fading, and is most of why this sounds like a room.
      */
     void apply_echo(const EchoSettings& echo, float& left, float& right);
-
-    // Steps of fractional position the interpolation kernel is tabulated at.
-    // A power of two so the lookup is a mask rather than a clamp.
-    static constexpr size_t kGaussSteps = 256;
-
-    /** The interpolation weights, built once. See the definition for what this
-        is and, more importantly, what it is not. */
-    static const std::array<std::array<float, 4>, kGaussSteps>& gauss_table();
 
     void   apply(const Event& e);
     void   reset_voices();

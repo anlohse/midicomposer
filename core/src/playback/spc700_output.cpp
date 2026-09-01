@@ -1,5 +1,7 @@
 #include "spc700_output.hpp"
 
+#include "playback/gaussian_table.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -308,50 +310,6 @@ void Spc700Output::apply(const Event& e) {
     }
 }
 
-const std::array<std::array<float, 4>, Spc700Output::kGaussSteps>&
-Spc700Output::gauss_table() {
-    // ── A gaussian kernel, computed, not the chip's ROM table ────────────────
-    //
-    // The S-DSP reads every sample through a four-point gaussian rather than
-    // linear interpolation, and that filter is a large part of why the console
-    // sounds soft: it rolls off hard well below Nyquist, so a bright sample
-    // comes back rounded. Using Hermite here made everything noticeably
-    // crisper than the hardware ever was.
-    //
-    // The chip's actual table is 512 sixteen-bit values in ROM, and it is not
-    // reproduced here because it is not known to this code -- writing numbers
-    // that look like it would be worse than a stated approximation, since
-    // nobody would ever check them again. What is here is a gaussian of the
-    // right shape and roughly the right width, evaluated once at startup.
-    //
-    // The consequence, stated so it is not discovered later as a surprise: this
-    // is the correct *kind* of filter with the wrong coefficients. Dropping the
-    // real table in means replacing this function and nothing else.
-    static const auto table = [] {
-        std::array<std::array<float, 4>, kGaussSteps> built{};
-        // Chosen for the shape rather than derived: wide enough that the four
-        // taps overlap the way the hardware's do, narrow enough that the kernel
-        // has decayed by the outer taps.
-        constexpr double sigma = 0.62;
-        for (size_t step = 0; step < kGaussSteps; ++step) {
-            const double f = static_cast<double>(step) / kGaussSteps;
-            double sum = 0.0;
-            for (int tap = 0; tap < 4; ++tap) {
-                // Taps sit at -1, 0, +1, +2 around the sample being read.
-                const double distance = (tap - 1) - f;
-                const double weight = std::exp(-(distance * distance) / (2.0 * sigma * sigma));
-                built[step][static_cast<size_t>(tap)] = static_cast<float>(weight);
-                sum += weight;
-            }
-            // Normalised, so a constant signal comes back as itself instead of
-            // gaining or losing level with the fractional position.
-            for (auto& weight : built[step]) weight = static_cast<float>(weight / sum);
-        }
-        return built;
-    }();
-    return table;
-}
-
 float Spc700Output::sample_at(const Sample& sample, double position) {
     const auto& data = sample.data;
     const int n = static_cast<int>(data.size());
@@ -366,9 +324,14 @@ float Spc700Output::sample_at(const Sample& sample, double position) {
     const auto at = [&data, n](int i) {
         return data[static_cast<size_t>(std::clamp(i, 0, n - 1))];
     };
-    const auto& weights = gauss_table()[static_cast<size_t>(f * kGaussSteps) & (kGaussSteps - 1)];
-    return at(i1 - 1) * weights[0] + at(i1) * weights[1] +
-           at(i1 + 1) * weights[2] + at(i1 + 2) * weights[3];
+    // The chip's own kernel, indexed the way the chip indexes it. See
+    // gaussian_table.hpp for where the numbers come from and what was checked.
+    const size_t p = std::min<size_t>(255, static_cast<size_t>(f * 256.0));
+    const float weighted = at(i1 - 1) * kGaussTable[255 - p] +
+                           at(i1)     * kGaussTable[511 - p] +
+                           at(i1 + 1) * kGaussTable[256 + p] +
+                           at(i1 + 2) * kGaussTable[p];
+    return weighted / static_cast<float>(kGaussUnity);
 }
 
 bool Spc700Output::advance_envelope(Voice& v) const {
