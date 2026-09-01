@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "io/sf2_file.hpp"
+#include "io/sample_pitch.hpp"
 #include "io/spc_file.hpp"
 #include "playback/spc700_output.hpp"
 
@@ -108,6 +109,9 @@ TEST_CASE("every real .spc rips") {
 
     size_t ripped = 0;
     size_t samples = 0;
+    size_t tuned = 0;
+    int lowest = 127;
+    int highest = 0;
     for (const auto& file : files) {
         const auto bank = io::load_spc(file);
         if (!bank) {
@@ -120,8 +124,26 @@ TEST_CASE("every real .spc rips") {
         ++ripped;
         samples += (*bank)->samples.size();
         CHECK_FALSE((*bank)->empty());
+
+        for (const auto& sample : (*bank)->samples) {
+            // 60 with no correction is the default the pitch detector leaves
+            // behind when it found nothing to measure.
+            if (sample.root_key != 60 || sample.fine_tune_cents != 0.0) {
+                ++tuned;
+                lowest = std::min(lowest, sample.root_key);
+                highest = std::max(highest, sample.root_key);
+            }
+            // A root key outside the keyboard means the detector locked onto
+            // something absurd, and the instrument would play at a rate no
+            // interpolation can help.
+            CHECK(sample.root_key >= 0);
+            CHECK(sample.root_key <= 127);
+            CHECK(std::abs(sample.fine_tune_cents) <= 50.0);
+        }
     }
     MESSAGE("Ripped ", ripped, " of ", files.size(), " files, ", samples, " samples in total");
+    MESSAGE("Pitch measured for ", tuned, " of ", samples, " samples; root keys ",
+            lowest, " to ", highest);
     CHECK(ripped == files.size());
 }
 
@@ -161,4 +183,37 @@ TEST_CASE("every real .sf2 loads") {
 
         hammer(*bank);
     }
+}
+
+TEST_CASE("a sample long enough to hold a pitch gets one") {
+    const auto files = files_with(".spc");
+    if (files.empty()) {
+        MESSAGE("No .spc found; set MC_BANK_DIR to run this against real rips");
+        return;
+    }
+
+    // The short ones are percussion and effects: two milliseconds cannot
+    // contain a period, and they have no pitch to be wrong about. The long ones
+    // are the instruments, and every one of them has to be placed on the
+    // keyboard or it plays at whatever interval C4 happens to imply.
+    constexpr size_t kLongEnough = 2000;   // 62ms at the chip's rate
+    size_t longs = 0;
+    size_t placed = 0;
+    for (const auto& file : files) {
+        const auto bank = io::load_spc(file);
+        if (!bank) continue;
+        for (const auto& sample : (*bank)->samples) {
+            if (sample.data.size() < kLongEnough) continue;
+            ++longs;
+            if (sample.root_key != 60 || sample.fine_tune_cents != 0.0) ++placed;
+        }
+    }
+    MESSAGE("Placed ", placed, " of ", longs, " samples over ", kLongEnough, " frames");
+    REQUIRE(longs > 0);
+    // 85 rather than a rounder number because that is where the material sits,
+    // not where it was aimed: about one long sample in ten in this set has no
+    // fundamental to find -- choirs, wind, surf, the sound effects a game keeps
+    // in the same bank. Raising the bar further would mean inventing pitches
+    // for them, which is the thing this is meant to stop doing.
+    CHECK(placed * 100 / longs >= 85);
 }
