@@ -143,6 +143,34 @@ void reveal_folder(const std::string& utf8_path) {
     ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+std::string webview2_runtime_version() {
+    // The Evergreen runtime registers itself under EdgeUpdate. Machine-wide
+    // installs land in the 32-bit view whatever this process is, and a per-user
+    // install lands in HKCU -- so both are asked before giving up.
+    static constexpr const wchar_t* kClient =
+        L"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients"
+        L"\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+
+    for (const auto& [root, flags] :
+         {std::pair{HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_32KEY},
+          std::pair{HKEY_CURRENT_USER, KEY_READ}}) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(root, kClient, 0, static_cast<REGSAM>(flags), &key) != ERROR_SUCCESS) {
+            continue;
+        }
+        wchar_t version[128] = L"";
+        DWORD size = sizeof(version);
+        DWORD type = 0;
+        const auto status = RegQueryValueExW(key, L"pv", nullptr, &type,
+                                             reinterpret_cast<LPBYTE>(version), &size);
+        RegCloseKey(key);
+        if (status == ERROR_SUCCESS && type == REG_SZ && version[0] != L'\0') {
+            return wide_to_utf8(version);
+        }
+    }
+    return "not found -- the Evergreen runtime does not appear to be installed";
+}
+
 void show_error_dialog(const std::string& title, const std::string& message) {
     MessageBoxW(nullptr, utf8_to_wide(message).c_str(), utf8_to_wide(title).c_str(),
                 MB_OK | MB_ICONERROR);
@@ -160,6 +188,7 @@ std::optional<std::string> open_file_dialog(const wchar_t*) { return std::nullop
 std::optional<std::string> save_file_dialog(const wchar_t*, const wchar_t*) { return std::nullopt; }
 std::optional<std::string> open_folder_dialog() { return std::nullopt; }
 void reveal_folder(const std::string&) {}
+std::string webview2_runtime_version() { return "not applicable on this platform"; }
 
 std::wstring make_file_filter(const std::string&) {
     std::wstring filter = L"All Files (*.*)";
@@ -168,6 +197,34 @@ std::wstring make_file_filter(const std::string&) {
     filter.push_back(L'\0');
     filter.push_back(L'\0');
     return filter;
+}
+
+std::string webview2_runtime_version() {
+    // The Evergreen runtime registers itself under EdgeUpdate. Machine-wide
+    // installs land in the 32-bit view whatever this process is, and a per-user
+    // install lands in HKCU -- so both are asked before giving up.
+    static constexpr const wchar_t* kClient =
+        L"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients"
+        L"\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+
+    for (const auto& [root, flags] :
+         {std::pair{HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_32KEY},
+          std::pair{HKEY_CURRENT_USER, KEY_READ}}) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(root, kClient, 0, static_cast<REGSAM>(flags), &key) != ERROR_SUCCESS) {
+            continue;
+        }
+        wchar_t version[128] = L"";
+        DWORD size = sizeof(version);
+        DWORD type = 0;
+        const auto status = RegQueryValueExW(key, L"pv", nullptr, &type,
+                                             reinterpret_cast<LPBYTE>(version), &size);
+        RegCloseKey(key);
+        if (status == ERROR_SUCCESS && type == REG_SZ && version[0] != L'\0') {
+            return wide_to_utf8(version);
+        }
+    }
+    return "not found -- the Evergreen runtime does not appear to be installed";
 }
 
 void show_error_dialog(const std::string& title, const std::string& message) {
