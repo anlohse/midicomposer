@@ -200,25 +200,54 @@ std::optional<uint16_t> find_generator(const std::map<uint16_t, uint16_t>& gener
 }
 
 /**
- * Every zone of `bags` between `bag_first` and `bag_last` that names `wanted`.
+ * Every zone of `bags` between `bag_first` and `bag_last` that names `wanted`,
+ * with the global zone folded into each of them.
  *
- * SF2 stores a global zone first when one is present, and it is the zone that
- * does *not* name an instrument or a sample. Requiring `wanted` is what skips
- * it without needing to know whether it was there.
+ * SF2 puts a global zone first when there is one, and it is recognised by what
+ * it lacks: a zone that does not name a sample (or, at the preset level, an
+ * instrument) is not a zone that plays nothing, it is the defaults for every
+ * zone after it. Skipping it -- which this used to do, on the grounds that it
+ * named nothing -- silently drops whatever the font chose to say once instead
+ * of on every zone, and fonts say a great deal that way: in ExpressiveSNES.sf2
+ * all 136 instruments have one, carrying the release for 135 of them, the decay
+ * for 116, the sustain for 114 and the loop mode for 122. That bank was being
+ * played with default envelopes throughout.
  *
- * All of them, not the first: an instrument's zones are how a piano covers the
- * keyboard, and taking one stretches a single recording over the lot.
+ * Folded in rather than returned separately so that everything downstream keeps
+ * reading one map per zone. A generator stated in the zone wins over the same
+ * generator in the global zone -- it is an override at this level, unlike the
+ * preset-over-instrument case, which is an offset.
+ *
+ * All the zones, not the first: an instrument's zones are how a piano covers
+ * the keyboard, and taking one stretches a single recording over the lot.
  */
 std::vector<std::map<uint16_t, uint16_t>> zones_naming(
     const std::vector<Bag>& bags, const std::vector<Generator>& generators,
     size_t bag_first, size_t bag_last, uint16_t wanted) {
     std::vector<std::map<uint16_t, uint16_t>> out;
+    std::map<uint16_t, uint16_t> shared;
+    bool first = true;
+
     for (size_t b = bag_first; b < bag_last && b < bags.size(); ++b) {
         const size_t gen_first = bags[b].gen_index;
         const size_t gen_last =
             (b + 1 < bags.size()) ? bags[b + 1].gen_index : generators.size();
         auto zone = zone_generators(generators, gen_first, gen_last);
-        if (zone.count(wanted)) out.push_back(std::move(zone));
+
+        if (first) {
+            first = false;
+            // Only the first zone can be global, and only if it names nothing.
+            // A later zone without a sample is a malformed one, and dropping it
+            // is what the format asks for.
+            if (!zone.count(wanted)) {
+                shared = std::move(zone);
+                continue;
+            }
+        }
+        if (!zone.count(wanted)) continue;
+
+        for (const auto& [op, amount] : shared) zone.emplace(op, amount);
+        out.push_back(std::move(zone));
     }
     return out;
 }
@@ -426,10 +455,29 @@ base::Result<std::shared_ptr<SampleBank>> parse_sf2(const std::string& bytes,
                 zone.root_key = header.original_key <= 127 ? header.original_key : 60;
                 zone.fine_tune_cents = header.correction;
 
+                // Looping is off unless the zone asks for it.
+                //
+                // Nearly every sample in a SoundFont carries loop points in its
+                // header whether or not it is meant to loop: a timpani hit has
+                // them, spanning almost the whole recording, and honouring them
+                // turns one strike into a drum roll that never ends. What
+                // decides is the sampleModes generator, whose default when
+                // absent is 0 -- play once -- and reading the header instead
+                // was what made a snare repeat under a held note.
+                //
+                // Mode 1 loops for as long as the note is held. Mode 3 loops
+                // until the key is released and then plays out the tail, which
+                // this engine has no separate stage for; looping it is the
+                // nearer of the two answers available. Mode 2 is unused and
+                // means the same as 0.
+                const auto modes = find_generator(inst_zone, kGenSampleModes);
+                const int loop_mode = modes ? (*modes & 3) : 0;
+                const bool wants_loop = loop_mode == 1 || loop_mode == 3;
+
                 // Loop points are absolute in the smpl chunk; a voice wants
                 // them relative to the sample it is reading.
-                if (header.loop_end > header.loop_start && header.loop_start >= header.start &&
-                    header.loop_end <= header.end) {
+                if (wants_loop && header.loop_end > header.loop_start &&
+                    header.loop_start >= header.start && header.loop_end <= header.end) {
                     zone.loop_start = static_cast<int>(header.loop_start - header.start);
                     zone.loop_end = static_cast<int>(header.loop_end - header.start);
                 }
@@ -454,10 +502,6 @@ base::Result<std::shared_ptr<SampleBank>> parse_sf2(const std::string& bytes,
                 // than to the recording -- which is the whole reason the two are
                 // separate. Two zones can share a piano sample and give it
                 // different root keys.
-                if (const auto modes = find_generator(inst_zone, kGenSampleModes)) {
-                    // 0 means play once, whatever the header's loop points say.
-                    if ((*modes & 3) == 0) zone.loop_start = -1;
-                }
                 if (const auto root = find_generator(inst_zone, kGenOverridingRootKey);
                     root && *root <= 127) {
                     zone.root_key = static_cast<int>(*root);

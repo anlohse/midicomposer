@@ -1035,6 +1035,51 @@ Three properties it holds to, and all three are what "audition" has to mean:
 Middle C by default, because an audition is for comparing instruments, and
 comparing them at different pitches compares the pitches.
 
+### 11a.9c Two bugs that were hiding each other
+
+A timpani held for four beats came back as a drum roll, and a snare as a machine
+gun. The report named the cause correctly -- the loop mode -- and finding it
+turned up a second, larger fault that had been concealing the first.
+
+**Looping was being read from the wrong place.** Almost every sample in a
+SoundFont carries loop points in its header whether or not it is meant to loop:
+the timpani in CTinstruments.sf2 has them, spanning 8..8968 of a 9000-frame
+recording. What decides is the `sampleModes` generator, and its default when
+absent is 0 -- play once. The loader had this inverted, honouring the header
+unless a generator explicitly said not to, so a sample that said nothing looped
+forever. Fourteen of that bank's thirty-nine zones are affected, and they are
+exactly the ones a person notices: osnare, timpani, tamb, pizzicato, perc1
+through perc3.
+
+**The global zone was being skipped.** An instrument's first bag may name no
+sample. That is not a zone that plays nothing; it is the instrument's defaults,
+and every zone after it inherits what it says. The loader recognised zones by
+requiring them to name a sample, which skipped the global zone -- deliberately,
+and with a comment saying so.
+
+The cost of that was not small. In ExpressiveSNES.sf2 all 136 instruments have a
+global zone, and it is where the font puts nearly everything: the release for 135
+of them against 11 stated per zone, the decay for 116, the sustain for 114, the
+loop mode for 122. **That bank had been playing with default envelopes
+throughout** -- a mean release of 80ms where the font asks for 1.25 seconds.
+
+The two hid each other. Reading the header's loop points gave ExpressiveSNES the
+right answer for the wrong reason, because the loops it was ignoring in the global
+zone happened to be the ones the headers described. Fixing `sampleModes` alone
+would have silenced every loop in the bank; fixing the global zone alone would
+have left the timpani rolling. Neither is a change that can be made on its own.
+
+A generator in a zone overrides the same generator in its global zone -- an
+override, not an offset, which is the opposite of how a preset's value combines
+with an instrument's (§11a.9a). The format is specific about which of the two
+each level is, and getting it backwards would be inaudible on most banks and
+wrong on all of them.
+
+Counted after the fix: CTinstruments 25 of 39 zones loop, ExpressiveSNES 202 of
+207, Zelda_3 none of 12 -- that last because its ten looping zones declare a mode
+but carry no usable loop points, which is a font saying loop and giving nothing
+to loop.
+
 ### 11a.10 Still missing
 
 - **A fuller envelope for a rip**, with one route already closed. Only the

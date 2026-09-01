@@ -105,6 +105,13 @@ struct FontSpec {
         zone naming instrument 0 over the whole keyboard, which is the shape
         most of these tests want. */
     std::vector<PresetZoneSpec> preset_zones;
+
+    /** The global zone: generators stated once, ahead of the zones they apply
+        to, in a bag that names no sample (or no instrument, at the preset
+        level). Written for every instrument in the font, which is more than a
+        real one would do and is all a test needs. */
+    std::vector<Zone> instrument_global;
+    std::vector<Zone> preset_global;
 };
 
 std::string build_sf2(const FontSpec& spec) {
@@ -133,7 +140,8 @@ std::string build_sf2(const FontSpec& spec) {
     put32(phdr, 0); put32(phdr, 0); put32(phdr, 0);   // library, genre, morphology
     put_name(phdr, "EOP");
     put16(phdr, 0); put16(phdr, 0);
-    put16(phdr, static_cast<uint16_t>(preset_zones.size()));   // one past the last bag
+    put16(phdr, static_cast<uint16_t>(
+        preset_zones.size() + (spec.preset_global.empty() ? 0 : 1)));   // one past the last bag
     put32(phdr, 0); put32(phdr, 0); put32(phdr, 0);
 
     // pbag and pgen: one bag per preset zone, then the terminal. Ranges are
@@ -142,7 +150,19 @@ std::string build_sf2(const FontSpec& spec) {
     std::string pbag;
     std::string pgen;
     uint16_t preset_generator_count = 0;
+    uint16_t preset_bag_count = 0;
+    if (!spec.preset_global.empty()) {
+        // A bag with generators and no instrument: the format knows it is the
+        // global zone by what it does not say.
+        put16(pbag, preset_generator_count); put16(pbag, 0);
+        ++preset_bag_count;
+        for (const auto& generator : spec.preset_global) {
+            put16(pgen, generator.op); put16(pgen, generator.amount);
+            ++preset_generator_count;
+        }
+    }
     for (const auto& zone : preset_zones) {
+        ++preset_bag_count;
         put16(pbag, preset_generator_count); put16(pbag, 0);
         if (zone.low_key != 0 || zone.high_key != 127) {
             put16(pgen, 43);
@@ -184,6 +204,14 @@ std::string build_sf2(const FontSpec& spec) {
         put16(inst, bag_count);
 
         const auto& instrument = instruments[i];
+        if (!spec.instrument_global.empty()) {
+            put16(ibag, generator_count); put16(ibag, 0);
+            ++bag_count;
+            for (const auto& generator : spec.instrument_global) {
+                put16(igen, generator.op); put16(igen, generator.amount);
+                ++generator_count;
+            }
+        }
         if (instrument.zones.empty()) {
             put16(ibag, generator_count); put16(ibag, 0);
             ++bag_count;
@@ -269,6 +297,7 @@ TEST_CASE("loop points arrive relative to the sample, not to the pool") {
     FontSpec spec;
     spec.loop_start = 2;
     spec.loop_end = 6;
+    spec.instrument_generators = {{54, 1}};   // sampleModes: loop while held
     const auto bank = io::parse_sf2(build_sf2(spec), "Test");
     REQUIRE(bank.has_value());
 
@@ -312,6 +341,90 @@ TEST_CASE("sampleModes 0 turns off a loop the header declares") {
     const auto* zone = (*bank)->zone_for(0, 60, 100);
     REQUIRE(zone != nullptr);
     CHECK(zone->loop_start == -1);
+}
+
+// ── Looping is opt-in ────────────────────────────────────────────────────────
+//
+// Almost every sample in a SoundFont carries loop points in its header whether
+// or not it is meant to loop. Reading them was what made a timpani strike into
+// a roll and a snare into a machine gun under a held note.
+
+TEST_CASE("a zone that says nothing about looping does not loop") {
+    FontSpec spec;
+    spec.loop_start = 2;
+    spec.loop_end = 6;                        // header loop points, and no mode
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+
+    // The format's default for sampleModes is 0, which is play once. A percussion
+    // hit is exactly the sample that states nothing and carries loop points.
+    const auto* zone = (*bank)->zone_for(0, 60, 100);
+    REQUIRE(zone != nullptr);
+    CHECK(zone->loop_start == -1);
+}
+
+TEST_CASE("sampleModes 3 loops, having a tail this engine cannot stage") {
+    FontSpec spec;
+    spec.instrument_generators = {{54, 3}};   // loop until release, then the tail
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->zone_for(0, 60, 100)->loop_start == 2);
+}
+
+TEST_CASE("sampleModes 2 is unused and means play once") {
+    FontSpec spec;
+    spec.instrument_generators = {{54, 2}};
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->zone_for(0, 60, 100)->loop_start == -1);
+}
+
+// ── The global zone ──────────────────────────────────────────────────────────
+//
+// An instrument's first bag may name no sample. That is not a zone that plays
+// nothing; it is the defaults for every zone after it, and skipping it drops
+// whatever the font chose to state once instead of on every zone. All 136
+// instruments of ExpressiveSNES.sf2 have one, and between them they carry the
+// release for 135, the decay for 116 and the loop mode for 122.
+
+TEST_CASE("an instrument's global zone reaches the zones under it") {
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{.root = 60}}, {}}};
+    // A global zone is the one that names no sample, so it is written as a
+    // preset zone's instrument would never be: generators and no sampleID.
+    spec.instrument_global = {{54, 1}, {58, 48}};   // sampleModes, overridingRootKey
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    const auto* zone = (*bank)->zone_for(0, 60, 100);
+    REQUIRE(zone != nullptr);
+    CHECK(zone->loop_start == 2);      // the loop mode came from the global zone
+}
+
+TEST_CASE("a zone overrides its instrument's global zone") {
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{.root = 72}}, {}}};
+    spec.instrument_global = {{58, 48}};   // the global zone says root 48
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    // At this level the zone's own value wins outright -- an override, unlike
+    // preset over instrument, which adds.
+    CHECK((*bank)->zone_for(0, 60, 100)->root_key == 72);
+}
+
+TEST_CASE("a preset's global zone offsets every instrument it names") {
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{}}, {}}, {{ZoneSpec{}}, {}}};
+    spec.preset_zones = {{.instrument = 0}, {.instrument = 1}};
+    spec.preset_global = {{52, 25}};   // fineTune, stated once for the preset
+
+    const auto bank = io::parse_sf2(build_sf2(spec), "Test");
+    REQUIRE(bank.has_value());
+    REQUIRE((*bank)->programs[0].zones.size() == 2);
+    for (const auto& zone : (*bank)->programs[0].zones) {
+        CHECK(zone.fine_tune_cents == doctest::Approx(25));
+    }
 }
 
 TEST_CASE("an overriding root key wins over the sample header") {

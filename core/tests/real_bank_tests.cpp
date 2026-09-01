@@ -313,6 +313,20 @@ TEST_CASE("every real .sf2 loads") {
         MESSAGE(file, ": at most ", worst, " zones answer one note");
         CHECK(worst <= 8);
 
+        // Looping is opt-in, and a bank where everything loops is a bank whose
+        // sampleModes were ignored in favour of the loop points every sample
+        // header carries. A percussion hit that loops is a drum roll.
+        size_t looping = 0;
+        double release_total = 0.0;
+        for (int p = 0; p < 128; ++p) {
+            for (const auto& zone : (*bank)->programs[static_cast<size_t>(p)].zones) {
+                if (zone.loop_start >= 0) ++looping;
+                release_total += zone.release;
+            }
+        }
+        MESSAGE(file, ": ", looping, " of ", zones, " zones loop; mean release ",
+                zones ? release_total / static_cast<double>(zones) : 0.0, "s");
+
         hammer(*bank);
     }
 }
