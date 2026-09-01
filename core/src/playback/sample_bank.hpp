@@ -56,6 +56,18 @@ struct Sample {
 
     float release{0.08f};
 
+    /**
+     * Whether this instrument reaches the echo at all.
+     *
+     * The chip decides per voice, with register `$4D`, and games use it: across
+     * ninety-two rips the count runs from none to all eight, mean five. A lead
+     * dry against a wet accompaniment is a mix decision somebody made, and
+     * sending everything flattens it.
+     *
+     * True by default, which is what a SoundFont means by saying nothing.
+     */
+    bool echo_send{true};
+
     std::string name;
 };
 

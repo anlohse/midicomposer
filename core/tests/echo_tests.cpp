@@ -224,3 +224,59 @@ TEST_CASE("the tail leaves room for the echo to decay") {
     CHECK(wet.tail_frames() > dry.tail_frames());
     CHECK(wet.tail_frames() > kRate);            // more than a second of it
 }
+
+TEST_CASE("an instrument that does not feed the echo still plays dry") {
+    // Register $4D picks which voices reach the echo, and games use it: across
+    // ninety-two rips the count runs from none to all eight. A dry lead over a
+    // wet accompaniment is a mix decision, and sending everything erases it.
+    auto bank = click_bank(plain_delay(100, 0.0f, 0.9f));
+    bank->samples[0].echo_send = false;
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank);
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    const auto left = render_left(out, kRate / 2);
+    const auto hits = onsets(left, 0.01f);
+
+    // Heard once, at the front, and never again.
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0] < kRate / 100);
+}
+
+TEST_CASE("two instruments, one wet and one dry, share one echo") {
+    // The arrangement the register exists for. Both sound; only one returns.
+    auto bank = std::make_shared<SampleBank>();
+    for (int i = 0; i < 2; ++i) {
+        Sample s;
+        s.data.assign(48, 0.9f);
+        s.root_key = 60;
+        s.source_rate = kRate;
+        s.attack = 0.0f;
+        s.decay = 0.0f;
+        s.sustain = 1.0f;
+        s.release = 0.0001f;
+        s.echo_send = (i == 0);
+        bank->samples.push_back(std::move(s));
+        bank->program_to_sample[i] = i;
+    }
+    bank->echo = plain_delay(100, 0.0f, 0.9f);
+
+    Spc700Output wet;
+    wet.set_sample_rate(kRate);
+    wet.set_bank(bank);
+    REQUIRE(wet.start().has_value());
+    wet.program_change(0, 0, 0);
+    wet.note_on(0, 60, 127, 0);
+    CHECK(onsets(render_left(wet, kRate / 2), 0.01f).size() == 2);
+
+    Spc700Output dry;
+    dry.set_sample_rate(kRate);
+    dry.set_bank(bank);
+    REQUIRE(dry.start().has_value());
+    dry.program_change(0, 1, 0);
+    dry.note_on(0, 60, 127, 0);
+    CHECK(onsets(render_left(dry, kRate / 2), 0.01f).size() == 1);
+}

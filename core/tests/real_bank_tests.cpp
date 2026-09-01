@@ -157,7 +157,25 @@ TEST_CASE("every real .spc rips") {
         }
     }
     MESSAGE("Ripped ", ripped, " of ", files.size(), " files, ", samples, " samples in total");
+    // How many instruments the games kept out of the echo. All-sending would
+    // mean $4D is not being read; none would mean it is read inverted.
+    size_t dry = 0;
+    size_t named = 0;
+    for (const auto& file : files) {
+        const auto bank = io::load_spc(file);
+        if (!bank) continue;
+        for (const auto& sample : (*bank)->samples) {
+            if (sample.sustain != 1.0f || sample.sustain_rate != 0.0f ||
+                sample.decay != 0.0f || sample.attack != 0.001f) {
+                ++named;
+                if (!sample.echo_send) ++dry;
+            }
+        }
+    }
     MESSAGE("Envelopes from the game for ", with_envelope, " of ", samples, " samples");
+    MESSAGE(dry, " of ", named, " configured samples are kept out of the echo");
+    CHECK(dry > 0);
+    CHECK(dry < named);
     // Every file had between two and eight voices configured when measured; if
     // this went to zero the SRCN mapping has broken.
     CHECK(with_envelope > files.size());

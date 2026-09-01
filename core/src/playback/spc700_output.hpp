@@ -199,8 +199,14 @@ private:
      * write the dry signal plus the filtered echo back in. The filter being
      * inside the feedback path is what makes repeats darken instead of just
      * fading, and is most of why this sounds like a room.
+     *
+     * `left`/`right` are everything sounding, and are what the echo is added
+     * to. `send_left`/`send_right` are only the voices whose instrument feeds
+     * the echo (`$4D`), and are what goes into the line. They differ whenever a
+     * rip wanted a dry lead over a wet accompaniment.
      */
-    void apply_echo(const EchoSettings& echo, float& left, float& right);
+    void apply_echo(const EchoSettings& echo, float& left, float& right,
+                    float send_left, float send_right);
 
     void   apply(const Event& e);
     void   reset_voices();

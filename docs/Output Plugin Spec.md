@@ -830,6 +830,18 @@ rather than replaying what the previous piece left in it. A filter with gain
 above one inside a feedback path runs away, so a rip declaring one is loaded
 with the echo off and a line saying why.
 
+**Not everything reaches it.** Register `$4D` picks which voices feed the echo,
+and games use it: across ninety-two rips the count runs from none to all eight,
+mean five, and 207 of the 442 configured samples are kept out. A dry lead over a
+wet accompaniment is a mix decision somebody made, and sending everything erases
+it. The bit is taken from the same voice the envelope came from (§11a.6a), since
+taking one voice's envelope and another's echo bit would describe a voice that
+never existed. A sample no voice names still sends, which is what a SoundFont
+means by saying nothing.
+
+Worth knowing when this looks like it is doing nothing: Wind Scene sets `$4D` to
+`0xFF`. That game really did send everything.
+
 Ninety-one of ninety-two rips declare an echo, with delays spread from 48 to
 240ms and a mean feedback of 0.59. Random bytes do not average to a musical
 feedback across ninety-two independent files, which was the evidence the
@@ -885,7 +897,12 @@ unknowns into reading a list.
 
 ### 11a.10 Still missing
 
-- **Per-voice echo send** (`EON`): everything currently feeds the echo.
+- **Key ranges and velocity layers in a SoundFont.** The largest gap now. A
+  serious General MIDI bank spreads an instrument across several samples, and
+  this takes the first: 40 of ExpressiveSNES.sf2's 136 instruments have more
+  than one zone and 38 declare key ranges, so roughly a third of that bank is
+  stretched from one sample where the author supplied several. The other two
+  thirds are single-zone and load exactly as intended.
 - **A fuller envelope for a rip.** Only the samples a voice happened to name get
   the game's own -- about a fifth. The rest keep defaults.
 - **Auditioning.** A program still has to be assigned to a track and played to
