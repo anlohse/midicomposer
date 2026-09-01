@@ -53,6 +53,7 @@ constexpr size_t kDspEchoVolumeRight = 0x3C;
 constexpr size_t kDspFlags           = 0x6C;   // bit 5 disables the echo
 constexpr size_t kDspEchoFeedback    = 0x0D;
 constexpr size_t kDspEchoDelay       = 0x7D;   // steps of 16ms, 0 to 15
+constexpr size_t kDspEchoOn          = 0x4D;   // one bit per voice
 constexpr size_t kDspFirBase         = 0x0F;   // then $1F, $2F ... $7F
 
 constexpr uint8_t kFlagEchoDisabled = 0x20;
@@ -149,7 +150,16 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
     // *an* envelope the game used with a sample, never *the* envelope, and the
     // most common one among the voices is the least arbitrary choice available.
     // Taking whichever voice came first would let voice order decide.
-    std::map<uint8_t, std::vector<std::pair<uint16_t, AdsrRegisters>>> candidates;
+    // A voice's whole configuration, kept together: taking one voice's envelope
+    // and another's echo bit would describe a voice that never existed.
+    struct VoiceSetup {
+        uint16_t shape{0};      // the two ADSR bytes, for voting
+        AdsrRegisters adsr;
+        bool echo_send{false};
+    };
+
+    const uint8_t echo_on = dsp[kDspEchoOn];
+    std::map<uint8_t, std::vector<VoiceSetup>> candidates;
     for (size_t voice = 0; voice < kVoiceCount; ++voice) {
         const size_t at = voice * kVoiceStride;
         const uint8_t adsr1 = dsp[at + kVoiceAdsr1];
@@ -158,21 +168,24 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         // A voice using GAIN instead is running a custom envelope in driver
         // code, which is not something a snapshot can hand over.
         if (!adsr.enabled) continue;
-        const auto shape = static_cast<uint16_t>((adsr1 << 8) | adsr2);
-        candidates[dsp[at + kVoiceSrcn]].emplace_back(shape, adsr);
+        VoiceSetup setup;
+        setup.shape = static_cast<uint16_t>((adsr1 << 8) | adsr2);
+        setup.adsr = adsr;
+        setup.echo_send = (echo_on & (1u << voice)) != 0;
+        candidates[dsp[at + kVoiceSrcn]].push_back(setup);
     }
 
-    std::map<uint8_t, AdsrRegisters> envelope_for_entry;
+    std::map<uint8_t, VoiceSetup> setup_for_entry;
     for (const auto& [srcn, voices] : candidates) {
         std::map<uint16_t, int> votes;
-        for (const auto& [shape, _] : voices) ++votes[shape];
-        uint16_t winner = voices.front().first;
+        for (const auto& setup : voices) ++votes[setup.shape];
+        uint16_t winner = voices.front().shape;
         int best = 0;
         for (const auto& [shape, count] : votes) {
             if (count > best) { best = count; winner = shape; }
         }
-        for (const auto& [shape, adsr] : voices) {
-            if (shape == winner) { envelope_for_entry.emplace(srcn, adsr); break; }
+        for (const auto& setup : voices) {
+            if (setup.shape == winner) { setup_for_entry.emplace(srcn, setup); break; }
         }
     }
 
@@ -265,12 +278,16 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         sample.sustain_rate = 0.0f;
         sample.release = 0.05f;
 
-        if (const auto found = envelope_for_entry.find(static_cast<uint8_t>(entry));
-            found != envelope_for_entry.end()) {
-            sample.attack = found->second.attack;
-            sample.decay = found->second.decay;
-            sample.sustain = found->second.sustain;
-            sample.sustain_rate = found->second.sustain_rate;
+        if (const auto found = setup_for_entry.find(static_cast<uint8_t>(entry));
+            found != setup_for_entry.end()) {
+            sample.attack = found->second.adsr.attack;
+            sample.decay = found->second.adsr.decay;
+            sample.sustain = found->second.adsr.sustain;
+            sample.sustain_rate = found->second.adsr.sustain_rate;
+            // From the same voice, deliberately: `$4D` says whether *this*
+            // voice reaches the echo, and it is part of the same configuration
+            // the envelope came from.
+            sample.echo_send = found->second.echo_send;
             // Release is deliberately not taken: the chip has no release rate
             // in ADSR -- key-off runs a fixed linear fade -- and §11a.8 chose a
             // short curve over that, so a note does not end on a click.

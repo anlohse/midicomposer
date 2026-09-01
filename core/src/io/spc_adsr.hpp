@@ -74,7 +74,7 @@ inline constexpr std::array<float, 32> kSustainSeconds = {
     0.074f, 0.055f, 0.037f, 0.018f,
 };
 
-/** One voice's ADSR registers, decoded. */
+/** One voice's envelope registers, decoded. */
 struct AdsrRegisters {
     bool  enabled{false};   // ADSR1 bit 7; when clear the voice uses GAIN
     float attack{0.0f};

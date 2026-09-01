@@ -464,3 +464,40 @@ TEST_CASE("the sustain rate table's endpoints are what the chip documents") {
     CHECK(io::kDecaySeconds[7] == doctest::Approx(0.037f));
     CHECK(io::kSustainLevel[7] == doctest::Approx(1.0f));      // decay does nothing
 }
+
+TEST_CASE("a voice's echo bit reaches the sample it names") {
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(8), 0x1000});   // entry 0
+    spec.entries.push_back({0x1400, simple_sample(8), 0x1400});   // entry 1
+
+    auto file = build_spc(spec);
+    // Voice 0 plays entry 0 and feeds the echo; voice 1 plays entry 1 and does
+    // not. Both need ADSR enabled, or neither voice is read at all.
+    file[0x10100 + 0x04] = static_cast<char>(0);
+    file[0x10100 + 0x05] = static_cast<char>(0x80);
+    file[0x10100 + 0x14] = static_cast<char>(1);
+    file[0x10100 + 0x15] = static_cast<char>(0x80);
+    file[0x10100 + 0x4D] = static_cast<char>(0x01);   // EON: voice 0 only
+
+    const auto bank = io::parse_spc(file, "Rip");
+    REQUIRE(bank.has_value());
+    REQUIRE((*bank)->samples.size() == 2);
+    CHECK((*bank)->samples[0].echo_send);
+    CHECK_FALSE((*bank)->samples[1].echo_send);
+}
+
+TEST_CASE("a sample no voice names still feeds the echo") {
+    // The default is to send, which is what a SoundFont means by saying
+    // nothing, and what the chip did here before the register was read.
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(8), 0x1000});
+
+    auto file = build_spc(spec);
+    file[0x10100 + 0x4D] = static_cast<char>(0x00);   // nothing feeds the echo
+    // No voice names entry 0: every SRCN is left at its default of zero, but
+    // ADSR is disabled everywhere, so no voice is read.
+
+    const auto bank = io::parse_spc(file, "Rip");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->samples[0].echo_send);
+}

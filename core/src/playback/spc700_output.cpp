@@ -42,7 +42,8 @@ void Spc700Output::resize_echo_line() {
     m_fir_right.fill(0.0f);
 }
 
-void Spc700Output::apply_echo(const EchoSettings& echo, float& left, float& right) {
+void Spc700Output::apply_echo(const EchoSettings& echo, float& left, float& right,
+                              float send_left, float send_right) {
     const int frames = std::min(echo.delay_ms * m_sample_rate / 1000,
                                 static_cast<int>(m_echo_line.size() / 2) - 1);
     if (frames <= 0) return;
@@ -80,8 +81,8 @@ void Spc700Output::apply_echo(const EchoSettings& echo, float& left, float& righ
 
     // Written back before the echo is added to the output, so a voice hears
     // itself once per pass rather than twice.
-    m_echo_line[at] = std::clamp(left + filtered_left * echo.feedback, -4.0f, 4.0f);
-    m_echo_line[at + 1] = std::clamp(right + filtered_right * echo.feedback, -4.0f, 4.0f);
+    m_echo_line[at] = std::clamp(send_left + filtered_left * echo.feedback, -4.0f, 4.0f);
+    m_echo_line[at + 1] = std::clamp(send_right + filtered_right * echo.feedback, -4.0f, 4.0f);
     // Clamped rather than trusted: the filter can have gain above one, and with
     // feedback near one that compounds every pass. The chip wraps here; a
     // rendered file would rather be loud than be a square wave.
@@ -448,6 +449,9 @@ void Spc700Output::render(float* interleaved, int frames) {
 
         float left = 0.0f;
         float right = 0.0f;
+        // What reaches the echo, which is not always everything.
+        float send_left = 0.0f;
+        float send_right = 0.0f;
         for (auto& v : m_voices) {
             if (!v.active || !v.sample) continue;
 
@@ -474,15 +478,21 @@ void Spc700Output::render(float* interleaved, int frames) {
 
             const auto& ch = m_channels[v.channel];
             const float amp = raw * ch.volume;
-            left  += amp * std::sqrt(1.0f - ch.pan);
-            right += amp * std::sqrt(ch.pan);
+            const float to_left = amp * std::sqrt(1.0f - ch.pan);
+            const float to_right = amp * std::sqrt(ch.pan);
+            left  += to_left;
+            right += to_right;
+            if (s.echo_send) {
+                send_left  += to_left;
+                send_right += to_right;
+            }
         }
 
         // After the voices and before the output clip, which is where the chip
         // puts it: the echo carries what was played, and what comes back is
         // subject to the same ceiling as everything else.
         if (m_block_bank && m_block_bank->echo.enabled) {
-            apply_echo(m_block_bank->echo, left, right);
+            apply_echo(m_block_bank->echo, left, right, send_left, send_right);
         }
 
         interleaved[i * 2]     = std::clamp(left, -1.0f, 1.0f);
