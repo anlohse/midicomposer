@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1159,4 +1160,60 @@ TEST_CASE("an error names the output the user chose, not the layer") {
     // "does not produce audio (Routing)" named something nobody has heard of.
     CHECK(rendered.error().message.find("Recording") != std::string::npos);
     CHECK(rendered.error().message.find("Routing") == std::string::npos);
+}
+
+TEST_CASE("every track reaches the output, whatever channel it is on") {
+    device::MidiService midi;
+    testing::RecordingOutput out;
+    playback::PlaybackEngine engine{midi, out};
+
+    // Thirteen tracks on thirteen channels, the shape of a demonstration
+    // project: each one a program change at tick 0 and a note of its own.
+    // Channel 9 is left out because the metronome borrows it.
+    const std::vector<std::pair<uint8_t, uint8_t>> voices = {
+        {0, 0}, {1, 3}, {2, 47}, {3, 116}, {4, 115}, {5, 73}, {6, 71},
+        {7, 48}, {8, 45}, {10, 52}, {11, 123}, {12, 122}, {13, 127},
+    };
+
+    music::Composition comp{base::CompositionId{1}};
+    comp.set_ppqn(static_cast<int>(kPpqn));
+    std::uint64_t id = 1;
+    for (const auto& [channel, program] : voices) {
+        music::Track track{base::TrackId{id}, "Track"};
+        track.set_midi_channel(channel);
+        track.program_changes().push_back({base::EventId{id}, timeline::Tick{0}, program});
+        music::Note n;
+        n.id = base::NoteId{id};
+        n.start = timeline::Tick{0};
+        n.duration = timeline::TickDuration{kPpqn / 4};
+        n.pitch = 60;
+        n.velocity = 100;
+        track.notes().push_back(n);
+        comp.tracks().push_back(std::move(track));
+        ++id;
+    }
+    project::ProjectDocument doc{std::move(comp)};
+
+    REQUIRE(engine.play(doc).has_value());
+    REQUIRE(wait_for_state(engine, playback::TransportState::Stopped, 3000ms));
+
+    // What actually left the engine. A track that reaches nothing is a track
+    // that is silent for a reason nobody can see from the score.
+    std::set<uint8_t> sounded;
+    std::set<uint8_t> programmed;
+    for (const auto& event : out.events()) {
+        if (event.kind == testing::RecordingOutput::Event::Kind::NoteOn) {
+            sounded.insert(event.channel);
+        }
+        if (event.kind == testing::RecordingOutput::Event::Kind::ProgramChange) {
+            programmed.insert(event.channel);
+        }
+    }
+
+    for (const auto& [channel, program] : voices) {
+        CAPTURE(channel);
+        CAPTURE(program);
+        CHECK(sounded.count(channel) == 1);
+        CHECK(programmed.count(channel) == 1);
+    }
 }
