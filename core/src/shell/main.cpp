@@ -6,13 +6,54 @@
 #include <saucer/smartview.hpp>
 #include <saucer/serializers/glaze/glaze.hpp>
 #include <memory>
+#include <cstdlib>
+#include <exception>
+#include <string>
+
+namespace {
+
+/**
+ * Reports a startup failure instead of vanishing.
+ *
+ * Everything below runs before there is a window, so anything that throws here
+ * ends the process with no window, no message, and -- until the log became a
+ * file -- no trace at all. That is the worst failure an application can have,
+ * because the person in front of it has nothing to report but "it does not
+ * start".
+ */
+[[noreturn]] void die(const std::string& stage, const std::string& detail) {
+    MC_LOG_CRITICAL("Failed during {}: {}", stage, detail);
+    midi_composer::shell::show_error_dialog(
+        "MIDI Composer",
+        "The application could not start.\n\nStage: " + stage + "\n" + detail +
+            "\n\nThe full log is in:\n" +
+            midi_composer::base::Logger::log_path().string());
+    std::exit(1);
+}
+
+} // namespace
 
 int main() {
     midi_composer::shell::Application app_context;
     app_context.initialize();
     app_context.core().initialize();
 
-    saucer::smartview view;
+    // The webview is created here, and creating it is the step most likely to
+    // fail on a machine rather than in the code: it needs the WebView2 runtime
+    // present, and it needs its user data folder, which another instance --
+    // including one whose parent has already died -- may still hold.
+    MC_LOG_INFO("Creating the webview");
+    std::unique_ptr<saucer::smartview<>> view_holder;
+    try {
+        view_holder = std::make_unique<saucer::smartview<>>();
+    } catch (const std::exception& e) {
+        die("creating the webview", e.what());
+    } catch (...) {
+        die("creating the webview",
+            "The WebView2 runtime is missing, or another instance still holds its data folder.");
+    }
+    auto& view = *view_holder;
+    MC_LOG_INFO("Webview created");
 
     view.on<saucer::window_event::close>([&app_context]() -> bool {
         app_context.core().shutdown();
@@ -81,6 +122,7 @@ int main() {
     view.serve("index.html");
 #endif
 
+    MC_LOG_INFO("Showing the window");
     view.show();
     view.run();
 
