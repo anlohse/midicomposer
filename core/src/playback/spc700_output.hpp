@@ -129,6 +129,11 @@ private:
     // synth gives itself.
     static constexpr float kVoiceGain = 0.25f;
 
+    // Where a voice is quiet enough to be finished. An exponential never
+    // reaches zero, so something has to say when it has stopped mattering:
+    // -66dB, well under the noise of anything it is mixed with.
+    static constexpr float kSilence = 0.0005f;
+
     struct Event {
         enum class Kind { NoteOn, NoteOff, Controller, ProgramChange, PitchBend, Reset };
         Kind    kind{Kind::Reset};
