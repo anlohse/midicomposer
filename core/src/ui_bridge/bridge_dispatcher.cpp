@@ -475,7 +475,9 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             // Empty means General MIDI, which is what the UI already has. Only
             // an output that knows its own instruments answers.
             auto result = nlohmann::json::array();
-            for (const auto& name : m_core.output().program_names()) result.push_back(name);
+            for (const auto& program : m_core.output().programs()) {
+                result.push_back({{"program", program.program}, {"name", program.name}});
+            }
             response["result"] = result;
         } else if (type == "get_preferences") {
             const auto& prefs = m_core.preferences();

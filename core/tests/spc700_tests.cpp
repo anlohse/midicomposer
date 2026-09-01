@@ -501,20 +501,42 @@ TEST_CASE("a voice ends rather than fading forever") {
     CHECK(out.active_voices() == 0);
 }
 
-TEST_CASE("an output names its own instruments only when it has some") {
+TEST_CASE("an output offers its own instruments only when it has some") {
     Spc700Output out;
     out.set_sample_rate(kRate);
 
     // Nothing loaded: the General MIDI names stand, which is what the UI has
     // always shown. Claiming an empty list of our own would blank the menu.
-    CHECK(out.program_names().empty());
+    CHECK(out.programs().empty());
 
     auto bank = bank_with(flat_sample(1.0f, 100));
     bank->program_names[0] = "Grand Piano";
     out.set_bank(bank);
 
-    const auto names = out.program_names();
-    REQUIRE(names.size() == 128);
-    CHECK(names[0] == "Grand Piano");
-    CHECK(names[1].empty());
+    // Only what the bank filled -- one entry, not a hundred and twenty-eight
+    // with one of them useful.
+    const auto programs = out.programs();
+    REQUIRE(programs.size() == 1);
+    CHECK(programs[0].program == 0);
+    CHECK(programs[0].name == "Grand Piano");
+}
+
+TEST_CASE("a bank with gaps offers only the programs that are filled") {
+    auto bank = std::make_shared<SampleBank>();
+    bank->samples.push_back(flat_sample(1.0f, 100));
+    bank->samples.push_back(flat_sample(0.5f, 100));
+    bank->program_to_sample[0] = 0;
+    bank->program_to_sample[40] = 1;
+    bank->program_names[0] = "First";
+    bank->program_names[40] = "Second";
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank);
+
+    const auto programs = out.programs();
+    REQUIRE(programs.size() == 2);
+    CHECK(programs[0].program == 0);
+    CHECK(programs[1].program == 40);
+    CHECK(programs[1].name == "Second");
 }

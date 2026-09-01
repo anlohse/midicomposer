@@ -52,7 +52,7 @@ public:
 
     [[nodiscard]] std::vector<Parameter> parameters() const override;
     [[nodiscard]] ParameterValue get_parameter(std::string_view name) const override;
-    [[nodiscard]] std::vector<std::string> program_names() const override;
+    [[nodiscard]] std::vector<ProgramInfo> programs() const override;
     base::Result<void> set_parameter(std::string_view name, const ParameterValue& value) override;
 
     /**

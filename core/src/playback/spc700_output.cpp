@@ -132,11 +132,17 @@ ParameterValue Spc700Output::get_parameter(std::string_view name) const {
     return m_bank_path;
 }
 
-std::vector<std::string> Spc700Output::program_names() const {
+std::vector<Spc700Output::ProgramInfo> Spc700Output::programs() const {
     const auto loaded = bank();
     if (!loaded) return {};      // nothing loaded: leave the list alone
-    return std::vector<std::string>(loaded->program_names.begin(),
-                                    loaded->program_names.end());
+    std::vector<ProgramInfo> out;
+    for (int program = 0; program < 128; ++program) {
+        // Only what the bank actually filled. A rip has two dozen instruments,
+        // and offering a hundred empty slots would bury them.
+        if (!loaded->for_program(program)) continue;
+        out.push_back({program, loaded->program_names[static_cast<size_t>(program)]});
+    }
+    return out;
 }
 
 base::Result<void> Spc700Output::set_parameter(std::string_view name,

@@ -92,6 +92,17 @@ public:
 
     [[nodiscard]] std::optional<base::Error> failure() const override;
 
+    /**
+     * All 128, unnamed.
+     *
+     * A plugin does something of its own with a program change and there is no
+     * way to ask what: `clap.preset-load` loads a preset from a path, and the
+     * preset-discovery factory indexes preset files on disk, neither of which
+     * says what program 12 is. Offering the General MIDI names instead would
+     * label a JC-303 "Acoustic Grand Piano", which is worse than a number.
+     */
+    [[nodiscard]] std::vector<ProgramInfo> programs() const override;
+
     // ── AudioSource ──────────────────────────────────────────────────────────
 
     [[nodiscard]] int sample_rate() const override { return m_sample_rate; }

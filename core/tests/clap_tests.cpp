@@ -332,3 +332,19 @@ TEST_CASE("how long a real plugin takes to activate") {
     MESSAGE("start() took ", ms, " ms");
     CHECK(ms < 250.0);
 }
+
+TEST_CASE("a hosted plugin offers numbers, because it has no names to offer") {
+    // CLAP has no way to ask what program 12 is: preset-load loads one from a
+    // path, and preset-discovery indexes preset files, neither of which maps
+    // onto the 128 program slots. Offering the General MIDI names instead would
+    // label a JC-303 "Acoustic Grand Piano".
+    testing::FakeClapPlugin fake;
+    playback::ClapInstance instance{fake.plugin(), "test", "Test"};
+    REQUIRE(instance.initialise().has_value());
+
+    const auto programs = instance.programs();
+    REQUIRE(programs.size() == 128);
+    CHECK(programs.front().program == 0);
+    CHECK(programs.back().program == 127);
+    for (const auto& program : programs) CHECK(program.name.empty());
+}

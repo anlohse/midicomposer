@@ -163,18 +163,33 @@ public:
     }
 
     /**
-     * What this output's programs are called, or empty for General MIDI.
+     * Which programs this output has, and what they are called.
      *
-     * The instrument list has always been the 128 General MIDI names, which is
+     * The instrument list used to be the 128 General MIDI names always. That is
      * right for a MIDI port and a lie for anything else: a sampler's program 11
      * is whatever its bank put there, and calling it "Music Box" tells the user
-     * something false rather than nothing. An output that knows its own
-     * instruments says so here; one that does not returns nothing and the
-     * General MIDI names stand.
+     * something false rather than nothing.
      *
-     * 128 entries when non-empty, with a blank for a program that is empty.
+     * Three answers are possible and they are all different, which is why this
+     * is a list of entries rather than a list of names:
+     *
+     *   - **Empty list.** "I speak General MIDI" -- a MIDI port, and the
+     *     internal synth, whose instrument families really are the GM ones.
+     *     The GM names stand.
+     *   - **Entries with names.** A sampler with a bank loaded: only the
+     *     programs that exist, each with whatever the bank calls it.
+     *   - **Entries without names.** A hosted plugin. CLAP has no way to ask
+     *     what a program is called -- `preset-load` only loads one from a path
+     *     and `preset-discovery` indexes preset files, neither of which maps
+     *     onto the 128 program slots -- so all 128 exist and none has a name.
+     *     A number is not helpful, but it is true.
      */
-    [[nodiscard]] virtual std::vector<std::string> program_names() const { return {}; }
+    struct ProgramInfo {
+        int program{0};        // 0..127
+        std::string name;      // empty when the output has none to give
+    };
+
+    [[nodiscard]] virtual std::vector<ProgramInfo> programs() const { return {}; }
 
     virtual base::Result<void> set_parameter(std::string_view name, const ParameterValue&) {
         return std::unexpected(base::Error{base::ErrorCode::NotFound,
