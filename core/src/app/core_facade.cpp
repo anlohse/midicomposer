@@ -7,6 +7,7 @@
 #include "io/sf2_file.hpp"
 #include "io/spc_file.hpp"
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <filesystem>
 
@@ -1002,6 +1003,73 @@ base::Result<void> CoreFacade::delete_pitch_bend(
     if (result) refresh_playback_if_active(doc_id, *doc);
     publish_changes(doc_id, *doc, base_revision);
     return result;
+}
+
+CoreFacade::AuditionChannel CoreFacade::choose_audition_channel(
+    const music::Composition& composition) {
+    bool used[16] = {};
+    for (const auto& track : composition.tracks()) {
+        if (track.midi_channel() < 16) used[track.midi_channel()] = true;
+    }
+
+    for (int c = 15; c >= 0; --c) {
+        if (!used[c]) return {static_cast<uint8_t>(c), false, 0};
+    }
+
+    // Everything is taken. Borrow the highest and remember its instrument,
+    // which is its program change at tick 0 -- where the instrument picker
+    // writes one.
+    AuditionChannel borrowed{15, true, 0};
+    for (const auto& track : composition.tracks()) {
+        if (track.midi_channel() != borrowed.channel) continue;
+        for (const auto& change : track.program_changes()) {
+            if (change.tick.value() == 0) borrowed.restore_program = change.program;
+        }
+        break;
+    }
+    return borrowed;
+}
+
+base::Result<void> CoreFacade::audition_program(base::CompositionId doc_id, uint8_t program,
+                                                uint8_t key, uint8_t velocity,
+                                                int milliseconds) {
+    if (program > 127 || key > 127 || velocity > 127) {
+        return std::unexpected(base::Error{base::ErrorCode::InvalidArgument,
+                                           "Program, key and velocity are MIDI values"});
+    }
+    // A bounded note. Nothing is waiting for this to end, so an unbounded one
+    // would be a note held until the application closed.
+    milliseconds = std::clamp(milliseconds, 50, 5000);
+
+    std::lock_guard lock(m_doc_mutex);
+
+    AuditionChannel where;
+    if (auto* doc = m_document_manager.get_document(doc_id)) {
+        where = choose_audition_channel(doc->composition());
+    }
+
+    // The selected output, deliberately, and not the route a track would take.
+    // The instrument list being auditioned is the selected output's own
+    // (`programs()`), so hearing a number through anything else would be
+    // hearing a different instrument than the one named on screen. A track
+    // routed to a plugin of its own is a separate question from "what is
+    // program 41 in this bank".
+    auto& target = output();
+
+    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const int64_t ends = now + static_cast<int64_t>(milliseconds) * 1000;
+
+    target.program_change(where.channel, program, now);
+    target.note_on(where.channel, key, velocity, now);
+    // Scheduled rather than waited for: the audio device runs on the wall clock
+    // whether or not the transport does, so a stamped event lands on its frame.
+    target.note_off(where.channel, key, ends);
+    if (where.borrowed) {
+        target.program_change(where.channel, where.restore_program, ends + 1000);
+    }
+
+    return {};
 }
 
 base::Result<void> CoreFacade::set_track_program(base::CompositionId doc_id, base::TrackId track_id, uint8_t program) {

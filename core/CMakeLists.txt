@@ -286,6 +286,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/preferences_tests.cpp
         tests/real_bank_tests.cpp
         tests/sample_pitch_tests.cpp
+        tests/audition_tests.cpp
         tests/sf2_tests.cpp
         tests/spc700_tests.cpp
         tests/spc_file_tests.cpp

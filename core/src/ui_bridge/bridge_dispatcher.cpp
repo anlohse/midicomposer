@@ -388,6 +388,20 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_program(doc_id, track_id, payload.at("program").get<uint8_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "audition_program") {
+            // Hearing an instrument without committing to it. The document id
+            // is asked for even though nothing is edited: it is how the facade
+            // finds a channel no track is using.
+            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto value = [&payload](const char* key, uint8_t fallback) {
+                return payload.contains(key) ? payload.at(key).get<uint8_t>() : fallback;
+            };
+            auto res = m_core.audition_program(doc_id, payload.at("program").get<uint8_t>(),
+                                               value("key", 60), value("velocity", 100),
+                                               payload.contains("milliseconds")
+                                                   ? payload.at("milliseconds").get<int>()
+                                                   : 700);
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "get_output_info") {
             // The selected output, its declared parameters and their current
             // values, in one round trip. Values come back with the schema

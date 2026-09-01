@@ -204,6 +204,18 @@ export class MidiEventsPanel extends LitElement {
         }
         button.add:hover:not(:disabled) { background: #3d3d3d; border-color: #007acc; }
         button.add:disabled { color: #666; cursor: default; }
+        button.listen {
+            background: #333;
+            border: 1px solid #4a4a4a;
+            color: #ddd;
+            font: inherit;
+            padding: 2px 7px;
+            border-radius: 2px;
+            cursor: pointer;
+            line-height: 1;
+        }
+        button.listen:hover:not(:disabled) { background: #3d3d3d; border-color: #007acc; }
+        button.listen:disabled { color: #666; cursor: default; }
         button.row-delete {
             background: none;
             border: none;
@@ -453,8 +465,23 @@ export class MidiEventsPanel extends LitElement {
                             </optgroup>
                         `)}
                 </select>
+                <!-- Two dozen numbered unknowns in a ripped bank is what makes
+                     this worth a button: picking one to find out what it is
+                     otherwise means putting it on a track and playing. -->
+                <button class="listen" title="Hear this instrument"
+                        @click=${() => this.audition(track)}>&#9654;</button>
             </div>
         `;
+    }
+
+    /**
+     * Sounds the track's instrument once, without changing anything.
+     *
+     * Middle C rather than the track's own notes: an audition is for comparing
+     * instruments, and comparing them at different pitches compares the pitches.
+     */
+    private audition(track: TrackSnapshot) {
+        void this.send('audition_program', { program: this.trackProgram(track) });
     }
 
     // ─── Rows ────────────────────────────────────────────────────────────────
