@@ -93,6 +93,18 @@ struct SampleBank {
     /** Index into `samples`, or -1 for a program with nothing behind it. */
     std::array<int, 128> program_to_sample{};
 
+    /**
+     * What each program is called, for the instrument list.
+     *
+     * A program has a name; a sample is data. Keeping them apart matters
+     * because one sample can be reached by several programs, and because a rip
+     * has no names at all -- what it has is measurements, which make a better
+     * label than a number does.
+     *
+     * Empty means the slot has nothing in it.
+     */
+    std::array<std::string, 128> program_names{};
+
     /** What to call this in the UI -- the file's own name, usually. */
     std::string name;
 

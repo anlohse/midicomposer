@@ -162,6 +162,20 @@ public:
         return {};
     }
 
+    /**
+     * What this output's programs are called, or empty for General MIDI.
+     *
+     * The instrument list has always been the 128 General MIDI names, which is
+     * right for a MIDI port and a lie for anything else: a sampler's program 11
+     * is whatever its bank put there, and calling it "Music Box" tells the user
+     * something false rather than nothing. An output that knows its own
+     * instruments says so here; one that does not returns nothing and the
+     * General MIDI names stand.
+     *
+     * 128 entries when non-empty, with a blank for a program that is empty.
+     */
+    [[nodiscard]] virtual std::vector<std::string> program_names() const { return {}; }
+
     virtual base::Result<void> set_parameter(std::string_view name, const ParameterValue&) {
         return std::unexpected(base::Error{base::ErrorCode::NotFound,
                                            "Unknown parameter: " + std::string(name)});

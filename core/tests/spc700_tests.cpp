@@ -500,3 +500,21 @@ TEST_CASE("a voice ends rather than fading forever") {
     peak_of_block(out, kRate / 4, 1'000'000);
     CHECK(out.active_voices() == 0);
 }
+
+TEST_CASE("an output names its own instruments only when it has some") {
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+
+    // Nothing loaded: the General MIDI names stand, which is what the UI has
+    // always shown. Claiming an empty list of our own would blank the menu.
+    CHECK(out.program_names().empty());
+
+    auto bank = bank_with(flat_sample(1.0f, 100));
+    bank->program_names[0] = "Grand Piano";
+    out.set_bank(bank);
+
+    const auto names = out.program_names();
+    REQUIRE(names.size() == 128);
+    CHECK(names[0] == "Grand Piano");
+    CHECK(names[1].empty());
+}

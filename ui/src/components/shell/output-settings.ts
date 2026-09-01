@@ -61,6 +61,19 @@ export async function loadOutputInfo(): Promise<OutputInfo | null> {
     }
 }
 
+/**
+ * Tells the rest of the window that the output, or something it declares,
+ * changed.
+ *
+ * A window event rather than a bubbling one because the parts that care are not
+ * ancestors of this dialog -- the instrument list lives in a different panel
+ * entirely, and routing an event through the tree to reach it would mean every
+ * component in between knowing about outputs.
+ */
+export function announceOutputChanged() {
+    window.dispatchEvent(new CustomEvent('mc-output-changed'));
+}
+
 /** The value worth showing next to the output's name. */
 export function headlineValue(info: OutputInfo | null): string | null {
     const p = info?.parameters.find(p => p.headline);
@@ -230,6 +243,7 @@ export class OutputSettings extends LitElement {
         // re-read rather than the values patched.
         await this.reload();
         this.dispatchEvent(new CustomEvent('output-changed', { bubbles: true, composed: true }));
+        announceOutputChanged();
     }
 
     private async setParameter(name: string, value: string | number | boolean) {
@@ -244,6 +258,9 @@ export class OutputSettings extends LitElement {
         // Re-read either way. A set can change another parameter's choices, and
         // on failure the stored value is not what was just typed.
         await this.reload();
+        // Loading a bank is a parameter change, and it is exactly what changes
+        // the instrument list somewhere else in the window.
+        announceOutputChanged();
     }
 
     private async browseFor(p: OutputParameter) {

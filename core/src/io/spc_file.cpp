@@ -192,7 +192,9 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         const auto pitch = estimate_pitch(sample.data, sample.source_rate,
                                           loop_is_usable ? sample.loop_start : 0,
                                           loop_is_usable ? sample.loop_end : -1);
+        bool pitched = false;
         if (pitch.frequency > 0.0 && pitch.confidence >= kPitchConfidence) {
+            pitched = true;
             // Rounded to a key, with the remainder kept as cents. Dropping the
             // remainder is the difference between an instrument that is in tune
             // and one that is a third of a semitone sharp -- and a bank where
@@ -210,9 +212,38 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         sample.sustain = 1.0f;
         sample.release = 0.05f;
 
+        // ── Naming what has no name ──────────────────────────────────────────
+        //
+        // A rip carries no instrument names: the driver knew and the driver is
+        // not in the file. "Sample 32" is honest and useless. What helps
+        // someone auditioning two dozen unknowns is what was already measured
+        // about each -- length tells a percussion hit from a held instrument at
+        // a glance, the note says where it sits, and looped says whether it can
+        // be held at all.
+        const double seconds = static_cast<double>(sample.data.size()) /
+                               static_cast<double>(sample.source_rate);
+        std::string label = "Sample " + std::to_string(entry) + " (";
+        if (pitched) {
+            static constexpr const char* kNoteNames[12] =
+                {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+            label += kNoteNames[sample.root_key % 12];
+            label += std::to_string(sample.root_key / 12 - 1);
+            label += ", ";
+        }
+        if (seconds >= 1.0) {
+            label += std::to_string(static_cast<int>(seconds)) + "." +
+                     std::to_string(static_cast<int>(seconds * 10) % 10) + "s";
+        } else {
+            label += std::to_string(static_cast<int>(seconds * 1000 + 0.5)) + "ms";
+        }
+        if (sample.loop_start >= 0) label += ", looped";
+        label += ")";
+        sample.name = label;
+
         bank->samples.push_back(std::move(sample));
         bank->program_to_sample[static_cast<size_t>(program)] =
             static_cast<int>(bank->samples.size()) - 1;
+        bank->program_names[static_cast<size_t>(program)] = label;
         ++program;
     }
 

@@ -407,6 +407,11 @@ base::Result<std::shared_ptr<SampleBank>> parse_sf2(const std::string& bytes,
         }
 
         bank->program_to_sample[preset.program] = index;
+        // The preset's name, not the sample's: a SoundFont calls the sample
+        // "Piano C4" and the preset "Grand Piano", and the second is the one a
+        // player is choosing between.
+        bank->program_names[preset.program] =
+            preset.name.empty() ? sample.name : preset.name;
     }
 
     if (bank->empty()) {

@@ -428,21 +428,28 @@ export class MidiEventsPanel extends LitElement {
             <div class="field-group">
                 <label for="instrument">Instrument</label>
                 <select id="instrument" class="instrument"
-                        title=${percussion
-                            ? 'Channel 10 is the percussion channel — programs select a drum kit'
-                            : 'General MIDI program for this track'}
+                        title=${this.programNames.length
+                            ? 'Instruments the selected output has loaded'
+                            : percussion
+                                ? 'Channel 10 is the percussion channel — programs select a drum kit'
+                                : 'General MIDI program for this track'}
                         @change=${(e: Event) => this.send('set_track_program', {
                             trackId, program: parseInt((e.target as HTMLSelectElement).value),
                         })}>
-                    ${GM_FAMILIES.map(family => html`
-                        <optgroup label=${family.name}>
-                            ${family.programs.map((name, i) => {
-                                const program = family.firstProgram + i;
-                                return html`<option value=${program}
-                                    ?selected=${this.trackProgram(track) === program}>${program + 1}. ${name}</option>`;
-                            })}
-                        </optgroup>
-                    `)}
+                    ${this.programNames.length
+                        ? this.programNames.map((name, program) => name
+                            ? html`<option value=${program}
+                                ?selected=${this.trackProgram(track) === program}>${program + 1}. ${name}</option>`
+                            : '')
+                        : GM_FAMILIES.map(family => html`
+                            <optgroup label=${family.name}>
+                                ${family.programs.map((name, i) => {
+                                    const program = family.firstProgram + i;
+                                    return html`<option value=${program}
+                                        ?selected=${this.trackProgram(track) === program}>${program + 1}. ${name}</option>`;
+                                })}
+                            </optgroup>
+                        `)}
                 </select>
             </div>
         `;
@@ -453,10 +460,41 @@ export class MidiEventsPanel extends LitElement {
     /** What can be routed to. Fixed for a build, so read once. */
     @state() private availableOutputs: OutputChoice[] = [];
 
+    /**
+     * The instrument list the selected output declares, or empty for General
+     * MIDI.
+     *
+     * A sampler's program 11 is whatever its bank put there, and offering the
+     * General MIDI names for it tells the user something false rather than
+     * nothing. Re-read whenever the output changes, because loading a bank is
+     * exactly what changes this.
+     */
+    @state() private programNames: string[] = [];
+
     async connectedCallback() {
         super.connectedCallback();
         const info = await loadOutputInfo();
         this.availableOutputs = info?.available ?? [];
+        await this.loadProgramNames();
+        window.addEventListener('mc-output-changed', this.onOutputChanged);
+    }
+
+    disconnectedCallback() {
+        window.removeEventListener('mc-output-changed', this.onOutputChanged);
+        super.disconnectedCallback();
+    }
+
+    private onOutputChanged = () => { void this.loadProgramNames(); };
+
+    private async loadProgramNames() {
+        try {
+            this.programNames = await CoreBridge.sendCommand<string[]>('get_program_names') ?? [];
+        } catch (err) {
+            // The General MIDI names are the fallback, and they are what was
+            // being shown before this existed.
+            console.error('Failed to read the instrument list', err);
+            this.programNames = [];
+        }
     }
 
     private renderRow(ev: PanelEvent) {
