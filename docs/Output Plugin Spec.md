@@ -669,6 +669,24 @@ bank's destructor can run there. For a few megabytes of vectors that is a cheap
 operation, and the alternative -- handing the corpse to another thread to bury
 -- is a queue and a thread for a problem nothing has measured.
 
+### 11a.2a A recording and how to play it are different things
+
+`Sample` is audio and nothing else. Everything about *how* to play it -- root
+key, loop points, envelope, whether it feeds the echo -- lives on a `Zone`,
+and a program is a list of zones covering parts of the keyboard.
+
+The split is not tidiness. It is what a SoundFont actually states: one recording
+is reached by several zones, each with its own root key and envelope, and a
+piano sampled at three octaves is a handful of recordings and a dozen zones.
+Fusing the two makes that unrepresentable -- two zones sharing a recording
+cannot disagree about its root key if the root key belongs to the recording.
+
+`zone_for(program, key, velocity)` takes the first zone whose ranges contain the
+note. First rather than best: a SoundFont's zones are meant to partition the
+keyboard, and where they overlap the format says the first applies. Ranking them
+would invent a rule the file did not state. A note outside every zone plays
+nothing, which is what a bank that says nothing about a key means.
+
 ### 11a.3 It renders at the host's rate
 
 The chip runs at 32kHz and the authentic arrangement would be to run the DSP
@@ -698,11 +716,18 @@ SF2 answers what a composition actually asks: presets addressed by bank and
 program -- exactly what a program change selects -- with loop points, root keys,
 tuning and envelopes already stated.
 
-Read from SF2: a preset's first instrument, that instrument's first zone naming
-a sample, loop points, root key, tuning, volume envelope. Skipped: key ranges,
-velocity layers, stereo pairs, modulators, the filter. A layered orchestral bank
-therefore sounds thinner than it should. That is the honest shape of one sample
-per program, not a parsing bug.
+Read from SF2: a preset's first instrument, **every** zone of that instrument
+with its key and velocity ranges, loop points, root key, tuning and volume
+envelope. Skipped: presets that layer several instruments, stereo pairs,
+modulators, the filter.
+
+Zones are the reason `Sample` and `Zone` are separate types (§11a.2a). A first
+version fused them, which worked exactly as long as every instrument was one
+recording stretched across the keyboard -- and stopped working the moment a
+real General MIDI bank turned up. ExpressiveSNES.sf2 goes from 108 samples in
+128 single-zone programs to 135 samples in 193 zones, 32 of them multi-sampled:
+27 recordings that were in the file all along and never reached, because they
+were in the second zone of an instrument.
 
 ### 11a.5 Telling a ripped instrument from a coincidence
 
@@ -897,12 +922,10 @@ unknowns into reading a list.
 
 ### 11a.10 Still missing
 
-- **Key ranges and velocity layers in a SoundFont.** The largest gap now. A
-  serious General MIDI bank spreads an instrument across several samples, and
-  this takes the first: 40 of ExpressiveSNES.sf2's 136 instruments have more
-  than one zone and 38 declare key ranges, so roughly a third of that bank is
-  stretched from one sample where the author supplied several. The other two
-  thirds are single-zone and load exactly as intended.
+- **Layered presets.** A preset may name several instruments to be played at
+  once, and only the first is taken. That is a second kind of stacking on top of
+  the key ranges, and honouring it would double the voices a note costs -- on a
+  chip with eight.
 - **A fuller envelope for a rip.** Only the samples a voice happened to name get
   the game's own -- about a fifth. The rest keep defaults.
 - **Auditioning.** A program still has to be assigned to a track and played to

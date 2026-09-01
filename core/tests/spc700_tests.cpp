@@ -16,13 +16,25 @@ namespace {
 
 constexpr int kRate = 48000;
 
+/**
+ * A recording and the zone that plays it, as one thing.
+ *
+ * The bank keeps audio and playback parameters apart because a SoundFont does,
+ * but almost every test here wants one of each and does not care about the
+ * split. Inheriting Zone means `s.attack` and `s.loop_start` still read as they
+ * did, and only the audio is reached through a name of its own.
+ */
+struct Instrument : Zone {
+    Sample audio;
+};
+
 /** A sample that is a constant, so its level can be asserted directly. */
-Sample flat_sample(float value, int frames, int root_key = 60) {
-    Sample s;
-    s.data.assign(static_cast<size_t>(frames), value);
+Instrument flat_sample(float value, int frames, int root_key = 60) {
+    Instrument s;
+    s.audio.data.assign(static_cast<size_t>(frames), value);
+    s.audio.source_rate = kRate;   // no resampling, so positions are frames
     s.root_key = root_key;
-    s.source_rate = kRate;      // no resampling, so positions are frames
-    s.attack = 0.0f;            // full level on the first frame
+    s.attack = 0.0f;               // full level on the first frame
     s.decay = 0.0f;
     s.sustain = 1.0f;
     s.release = 0.01f;
@@ -30,18 +42,21 @@ Sample flat_sample(float value, int frames, int root_key = 60) {
 }
 
 /** A ramp 0,1,2,... so a position can be read back out of the audio. */
-Sample ramp_sample(int frames) {
-    Sample s = flat_sample(0.0f, frames);
+Instrument ramp_sample(int frames) {
+    Instrument s = flat_sample(0.0f, frames);
     for (int i = 0; i < frames; ++i) {
-        s.data[static_cast<size_t>(i)] = static_cast<float>(i);
+        s.audio.data[static_cast<size_t>(i)] = static_cast<float>(i);
     }
     return s;
 }
 
-std::shared_ptr<SampleBank> bank_with(Sample sample, int program = 0) {
+std::shared_ptr<SampleBank> bank_with(Instrument instrument, int program = 0) {
     auto bank = std::make_shared<SampleBank>();
-    bank->samples.push_back(std::move(sample));
-    bank->program_to_sample[static_cast<size_t>(program)] = 0;
+    bank->samples.push_back(std::move(instrument.audio));
+    Zone zone = instrument;
+    zone.sample = 0;
+    bank->programs[static_cast<size_t>(program)].name = "Test";
+    bank->programs[static_cast<size_t>(program)].zones.push_back(zone);
     return bank;
 }
 
@@ -114,7 +129,7 @@ TEST_CASE("a one-shot stops at the end of its data") {
 TEST_CASE("a looping sample keeps sounding past its end") {
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 100);
+    Instrument looped = flat_sample(1.0f, 100);
     looped.loop_start = 0;
     looped.loop_end = 100;
     out.set_bank(bank_with(looped));
@@ -130,7 +145,7 @@ TEST_CASE("a looping sample keeps sounding past its end") {
 TEST_CASE("a note off releases the voice") {
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 100);
+    Instrument looped = flat_sample(1.0f, 100);
     looped.loop_start = 0;
     looped.loop_end = 100;
     looped.release = 0.001f;      // ~48 frames
@@ -150,10 +165,13 @@ TEST_CASE("a program change selects a different sample") {
     Spc700Output out;
     out.set_sample_rate(kRate);
     auto bank = std::make_shared<SampleBank>();
-    bank->samples.push_back(flat_sample(0.0f, kRate));   // program 0: silence
-    bank->samples.push_back(flat_sample(1.0f, kRate));   // program 1: loud
-    bank->program_to_sample[0] = 0;
-    bank->program_to_sample[1] = 1;
+    for (int i = 0; i < 2; ++i) {
+        auto instrument = flat_sample(i == 0 ? 0.0f : 1.0f, kRate);   // silent, then loud
+        bank->samples.push_back(std::move(instrument.audio));
+        Zone zone = instrument;
+        zone.sample = i;
+        bank->programs[static_cast<size_t>(i)].zones.push_back(zone);
+    }
     out.set_bank(bank);
     REQUIRE(out.start().has_value());
 
@@ -180,7 +198,7 @@ TEST_CASE("a program with nothing behind it is silent, not a crash") {
 TEST_CASE("a ninth note steals the oldest voice, not the newest") {
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 1000);
+    Instrument looped = flat_sample(1.0f, 1000);
     looped.loop_start = 0;
     looped.loop_end = 1000;
     out.set_bank(bank_with(looped));
@@ -197,7 +215,7 @@ TEST_CASE("a ninth note steals the oldest voice, not the newest") {
 TEST_CASE("the bank can be replaced while a note is sounding") {
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 1000);
+    Instrument looped = flat_sample(1.0f, 1000);
     looped.loop_start = 0;
     looped.loop_end = 1000;
     auto first = bank_with(looped);
@@ -226,7 +244,7 @@ TEST_CASE("a voice keeps its own bank alive for as long as it sounds") {
     Spc700Output out;
     out.set_sample_rate(kRate);
 
-    Sample looped = flat_sample(1.0f, 1000);
+    Instrument looped = flat_sample(1.0f, 1000);
     looped.loop_start = 0;
     looped.loop_end = 1000;
     auto first = bank_with(looped);
@@ -248,7 +266,7 @@ TEST_CASE("swapping the bank from another thread while rendering") {
     // here to be run under a sanitiser and to prove the two can overlap at all.
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 1000);
+    Instrument looped = flat_sample(1.0f, 1000);
     looped.loop_start = 0;
     looped.loop_end = 1000;
     out.set_bank(bank_with(looped));
@@ -259,7 +277,7 @@ TEST_CASE("swapping the bank from another thread while rendering") {
     std::thread loader([&] {
         int n = 0;
         while (!stop.load()) {
-            Sample s = flat_sample(0.5f, 1000);
+            Instrument s = flat_sample(0.5f, 1000);
             s.loop_start = 0;
             s.loop_end = 1000;
             out.set_bank(bank_with(s));
@@ -280,7 +298,7 @@ TEST_CASE("swapping the bank from another thread while rendering") {
 TEST_CASE("the tail is long enough for the slowest release in the bank") {
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample slow = flat_sample(1.0f, 100);
+    Instrument slow = flat_sample(1.0f, 100);
     slow.release = 2.0f;
     out.set_bank(bank_with(slow));
 
@@ -291,7 +309,7 @@ TEST_CASE("the tail is long enough for the slowest release in the bank") {
 TEST_CASE("the fader and pan reach the audio") {
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 1000);
+    Instrument looped = flat_sample(1.0f, 1000);
     looped.loop_start = 0;
     looped.loop_end = 1000;
     out.set_bank(bank_with(looped));
@@ -312,7 +330,7 @@ TEST_CASE("the interpolation kernel does not change the level of a steady signal
     // which is audible as a slow tremolo nobody asked for.
     Spc700Output out;
     out.set_sample_rate(kRate);
-    Sample looped = flat_sample(1.0f, 1000);
+    Instrument looped = flat_sample(1.0f, 1000);
     looped.loop_start = 0;
     looped.loop_end = 1000;
     out.set_bank(bank_with(looped));
@@ -359,11 +377,12 @@ TEST_CASE("interpolating between two samples stays between them") {
     // The gaussian's outer taps can overshoot on a step, which the chip does
     // too -- but on a signal that is simply rising, the reading has to land in
     // the range the neighbours describe or the kernel is indexed backwards.
-    Sample ramp;
-    ramp.data.resize(64);
-    for (size_t i = 0; i < ramp.data.size(); ++i) ramp.data[i] = static_cast<float>(i) / 64.0f;
+    Instrument ramp;
+    ramp.audio.data.resize(64);
+    for (size_t i = 0; i < ramp.audio.data.size(); ++i)
+        ramp.audio.data[i] = static_cast<float>(i) / 64.0f;
     ramp.root_key = 60;
-    ramp.source_rate = kRate;
+    ramp.audio.source_rate = kRate;
 
     Spc700Output out;
     out.set_sample_rate(kRate);
@@ -387,7 +406,8 @@ TEST_CASE("interpolating between two samples stays between them") {
 namespace {
 
 /** The output level frame by frame, for one held note on a steady sample. */
-std::vector<float> envelope_of(const Sample& sample, int frames, bool release_after = false) {
+std::vector<float> envelope_of(const Instrument& sample, int frames,
+                               bool release_after = false) {
     Spc700Output out;
     out.set_sample_rate(kRate);
     out.set_bank(bank_with(sample));
@@ -405,8 +425,8 @@ std::vector<float> envelope_of(const Sample& sample, int frames, bool release_af
     return level;
 }
 
-Sample steady_sample() {
-    Sample s = flat_sample(1.0f, 4000);
+Instrument steady_sample() {
+    Instrument s = flat_sample(1.0f, 4000);
     s.loop_start = 0;
     s.loop_end = 4000;
     return s;
@@ -415,7 +435,7 @@ Sample steady_sample() {
 } // namespace
 
 TEST_CASE("the attack rises in a straight line") {
-    Sample s = steady_sample();
+    Instrument s = steady_sample();
     s.attack = 0.02f;          // 960 frames
     s.decay = 0.0f;
     s.sustain = 1.0f;
@@ -431,7 +451,7 @@ TEST_CASE("the attack rises in a straight line") {
 }
 
 TEST_CASE("the decay gives up most of its distance early") {
-    Sample s = steady_sample();
+    Instrument s = steady_sample();
     s.attack = 0.0f;
     s.decay = 0.05f;           // 2400 frames
     s.sustain = 0.0f;
@@ -451,7 +471,7 @@ TEST_CASE("the decay gives up most of its distance early") {
 }
 
 TEST_CASE("the decay lands on the sustain level and stays there") {
-    Sample s = steady_sample();
+    Instrument s = steady_sample();
     s.attack = 0.0f;
     s.decay = 0.01f;
     s.sustain = 0.5f;
@@ -465,7 +485,7 @@ TEST_CASE("the decay lands on the sustain level and stays there") {
 }
 
 TEST_CASE("the release curves rather than sliding to zero") {
-    Sample s = steady_sample();
+    Instrument s = steady_sample();
     s.attack = 0.0f;
     s.decay = 0.0f;
     s.sustain = 1.0f;
@@ -485,7 +505,7 @@ TEST_CASE("the release curves rather than sliding to zero") {
 TEST_CASE("a voice ends rather than fading forever") {
     // An exponential never reaches zero, so something has to decide the note
     // has stopped mattering -- otherwise every note ever played keeps a voice.
-    Sample s = steady_sample();
+    Instrument s = steady_sample();
     s.attack = 0.0f;
     s.release = 0.005f;
 
@@ -510,7 +530,7 @@ TEST_CASE("an output offers its own instruments only when it has some") {
     CHECK(out.programs().empty());
 
     auto bank = bank_with(flat_sample(1.0f, 100));
-    bank->program_names[0] = "Grand Piano";
+    bank->programs[0].name = "Grand Piano";
     out.set_bank(bank);
 
     // Only what the bank filled -- one entry, not a hundred and twenty-eight
@@ -523,12 +543,16 @@ TEST_CASE("an output offers its own instruments only when it has some") {
 
 TEST_CASE("a bank with gaps offers only the programs that are filled") {
     auto bank = std::make_shared<SampleBank>();
-    bank->samples.push_back(flat_sample(1.0f, 100));
-    bank->samples.push_back(flat_sample(0.5f, 100));
-    bank->program_to_sample[0] = 0;
-    bank->program_to_sample[40] = 1;
-    bank->program_names[0] = "First";
-    bank->program_names[40] = "Second";
+    const int slots[] = {0, 40};
+    for (int i = 0; i < 2; ++i) {
+        auto instrument = flat_sample(i == 0 ? 1.0f : 0.5f, 100);
+        bank->samples.push_back(std::move(instrument.audio));
+        Zone zone = instrument;
+        zone.sample = i;
+        auto& program = bank->programs[static_cast<size_t>(slots[i])];
+        program.name = i == 0 ? "First" : "Second";
+        program.zones.push_back(zone);
+    }
 
     Spc700Output out;
     out.set_sample_rate(kRate);
@@ -544,7 +568,7 @@ TEST_CASE("a bank with gaps offers only the programs that are filled") {
 TEST_CASE("a sustain rate makes a held note fade") {
     // What the rips ask for: the chip always decays through sustain, and a
     // driver picks "hold" by setting the rate to zero.
-    Sample s = flat_sample(1.0f, 4000);
+    Instrument s = flat_sample(1.0f, 4000);
     s.loop_start = 0;
     s.loop_end = 4000;
     s.attack = 0.0f;
@@ -578,7 +602,7 @@ TEST_CASE("a sustain rate makes a held note fade") {
 }
 
 TEST_CASE("a sustain rate of zero holds, which is what a SoundFont means") {
-    Sample s = flat_sample(1.0f, 4000);
+    Instrument s = flat_sample(1.0f, 4000);
     s.loop_start = 0;
     s.loop_end = 4000;
     s.attack = 0.0f;

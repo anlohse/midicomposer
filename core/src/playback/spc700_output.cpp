@@ -140,8 +140,8 @@ std::vector<Spc700Output::ProgramInfo> Spc700Output::programs() const {
     for (int program = 0; program < 128; ++program) {
         // Only what the bank actually filled. A rip has two dozen instruments,
         // and offering a hundred empty slots would bury them.
-        if (!loaded->for_program(program)) continue;
-        out.push_back({program, loaded->program_names[static_cast<size_t>(program)]});
+        if (!loaded->has_program(program)) continue;
+        out.push_back({program, loaded->programs[static_cast<size_t>(program)].name});
     }
     return out;
 }
@@ -228,14 +228,15 @@ void Spc700Output::pitch_bend(uint8_t ch, int16_t value, int64_t when_us) {
 
 // ── Voices ───────────────────────────────────────────────────────────────────
 
-double Spc700Output::rate_for(const Sample& sample, uint8_t pitch, float bend) const {
+double Spc700Output::rate_for(const Sample& sample, const Zone& zone, uint8_t pitch,
+                              float bend) const {
     // A rate, the way the DSP addresses a sample: how many sample frames to
     // advance per output frame. Two things are folded in -- the interval from
     // the pitch the sample was recorded at, and the ratio between the sample's
     // own rate and the one being rendered at.
     const double semitones = static_cast<double>(pitch) + bend -
-                             static_cast<double>(sample.root_key) +
-                             sample.fine_tune_cents / 100.0;
+                             static_cast<double>(zone.root_key) +
+                             zone.fine_tune_cents / 100.0;
     const double ratio = std::pow(2.0, semitones / 12.0);
     return ratio * static_cast<double>(sample.source_rate) / m_sample_rate;
 }
@@ -249,7 +250,11 @@ void Spc700Output::reset_voices() {
 void Spc700Output::start_note(uint8_t channel, uint8_t pitch, uint8_t velocity) {
     if (!m_block_bank) return;    // nothing loaded: the note is simply silent
     const auto& ch = m_channels[channel & 0x0F];
-    const Sample* sample = m_block_bank->for_program(ch.program);
+    // The zone decides, not the program: a multi-sampled instrument answers
+    // differently at each end of the keyboard, which is the point of zones.
+    const Zone* zone = m_block_bank->zone_for(ch.program, pitch, velocity);
+    if (!zone) return;
+    const Sample* sample = m_block_bank->sample_of(*zone);
     if (!sample || sample->data.empty()) return;
 
     Voice* slot = nullptr;
@@ -270,11 +275,12 @@ void Spc700Output::start_note(uint8_t channel, uint8_t pitch, uint8_t velocity) 
     slot->channel  = static_cast<uint8_t>(channel & 0x0F);
     slot->pitch    = pitch;
     slot->sample   = sample;
+    slot->zone     = zone;
     // The bank, not just the sample: this is what stops a swap from pulling the
     // audio out from under a note that is still sounding.
     slot->holder   = m_block_bank;
     slot->position = 0.0;
-    slot->rate     = rate_for(*sample, pitch, ch.bend);
+    slot->rate     = rate_for(*sample, *zone, pitch, ch.bend);
     slot->level    = static_cast<float>(velocity) / 127.0f;
     slot->envelope = 0.0f;
     slot->stage    = Stage::Attack;
@@ -316,8 +322,8 @@ void Spc700Output::apply(const Event& e) {
         case Event::Kind::PitchBend:
             ch.bend = static_cast<float>(e.a) / 8192.0f * 2.0f;   // ±2 semitones
             for (auto& v : m_voices) {
-                if (v.active && v.sample && v.channel == (e.channel & 0x0F)) {
-                    v.rate = rate_for(*v.sample, v.pitch, ch.bend);
+                if (v.active && v.sample && v.zone && v.channel == (e.channel & 0x0F)) {
+                    v.rate = rate_for(*v.sample, *v.zone, v.pitch, ch.bend);
                 }
             }
             break;
@@ -349,7 +355,7 @@ float Spc700Output::sample_at(const Sample& sample, double position) {
 }
 
 bool Spc700Output::advance_envelope(Voice& v) const {
-    const auto& s = *v.sample;
+    const auto& s = *v.zone;
     const float rate = static_cast<float>(m_sample_rate);
 
     // How much of the remaining distance to close each frame, for a stage that
@@ -453,7 +459,7 @@ void Spc700Output::render(float* interleaved, int frames) {
         float send_left = 0.0f;
         float send_right = 0.0f;
         for (auto& v : m_voices) {
-            if (!v.active || !v.sample) continue;
+            if (!v.active || !v.sample || !v.zone) continue;
 
             if (!advance_envelope(v)) {
                 v = {};   // releases this voice's hold on its bank
@@ -461,13 +467,14 @@ void Spc700Output::render(float* interleaved, int frames) {
             }
 
             const auto& s = *v.sample;
+            const auto& z = *v.zone;
             const float raw = sample_at(s, v.position) * v.envelope * v.level * kVoiceGain;
             v.position += v.rate;
 
-            if (s.loop_start >= 0 && s.loop_end > s.loop_start) {
-                if (v.position >= s.loop_end) {
-                    const double span = static_cast<double>(s.loop_end - s.loop_start);
-                    v.position = s.loop_start + std::fmod(v.position - s.loop_end, span);
+            if (z.loop_start >= 0 && z.loop_end > z.loop_start) {
+                if (v.position >= z.loop_end) {
+                    const double span = static_cast<double>(z.loop_end - z.loop_start);
+                    v.position = z.loop_start + std::fmod(v.position - z.loop_end, span);
                 }
             } else if (v.position >= static_cast<double>(s.data.size())) {
                 // Ran off the end of a one-shot. Not a release: there is simply
@@ -482,7 +489,7 @@ void Spc700Output::render(float* interleaved, int frames) {
             const float to_right = amp * std::sqrt(ch.pan);
             left  += to_left;
             right += to_right;
-            if (s.echo_send) {
+            if (z.echo_send) {
                 send_left  += to_left;
                 send_right += to_right;
             }
@@ -509,7 +516,9 @@ int Spc700Output::tail_frames() const {
     // rendered file ends on a click.
     float longest = 0.1f;
     if (const auto bank = this->bank()) {
-        for (const auto& s : bank->samples) longest = std::max(longest, s.release);
+        for (const auto& program : bank->programs) {
+            for (const auto& zone : program.zones) longest = std::max(longest, zone.release);
+        }
         if (bank->echo.enabled) {
             // The echo has to run out too, or a rendered file ends by cutting
             // the tail off the last chord. How long it takes depends on the

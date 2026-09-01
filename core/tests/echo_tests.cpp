@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "playback/spc700_output.hpp"
+#include "test_bank.hpp"
 
 #include <cmath>
 #include <memory>
@@ -16,24 +17,17 @@ constexpr int kRate = 48000;
 /** A bank of one very short click, so what comes back is unmistakably an echo
     of it rather than the note still sounding. */
 std::shared_ptr<SampleBank> click_bank(const EchoSettings& echo, bool bright = false) {
-    Sample s;
-    s.data.assign(48, 0.0f);           // 1ms
+    auto s = testing::flat_audio(0.9f, 48, kRate);     // 1ms
     // Flat by default, so a peak is easy to find. `bright` alternates every
     // frame instead -- all the energy at the top of the band, which is the only
     // way a low-pass has anything to remove.
-    for (size_t i = 0; i < s.data.size(); ++i) {
-        s.data[i] = bright && (i % 2) ? -0.9f : 0.9f;
+    if (bright) {
+        for (size_t i = 0; i < s.data.size(); ++i) s.data[i] = (i % 2) ? -0.9f : 0.9f;
     }
-    s.root_key = 60;
-    s.source_rate = kRate;
-    s.attack = 0.0f;
-    s.decay = 0.0f;
-    s.sustain = 1.0f;
-    s.release = 0.0001f;
+    auto zone = testing::plain_zone();
+    zone.release = 0.0001f;
 
-    auto bank = std::make_shared<SampleBank>();
-    bank->samples.push_back(std::move(s));
-    bank->program_to_sample[0] = 0;
+    auto bank = testing::one_zone_bank(std::move(s), zone);
     bank->echo = echo;
     return bank;
 }
@@ -230,7 +224,7 @@ TEST_CASE("an instrument that does not feed the echo still plays dry") {
     // ninety-two rips the count runs from none to all eight. A dry lead over a
     // wet accompaniment is a mix decision, and sending everything erases it.
     auto bank = click_bank(plain_delay(100, 0.0f, 0.9f));
-    bank->samples[0].echo_send = false;
+    bank->programs[0].zones[0].echo_send = false;
 
     Spc700Output out;
     out.set_sample_rate(kRate);
@@ -250,17 +244,11 @@ TEST_CASE("two instruments, one wet and one dry, share one echo") {
     // The arrangement the register exists for. Both sound; only one returns.
     auto bank = std::make_shared<SampleBank>();
     for (int i = 0; i < 2; ++i) {
-        Sample s;
-        s.data.assign(48, 0.9f);
-        s.root_key = 60;
-        s.source_rate = kRate;
-        s.attack = 0.0f;
-        s.decay = 0.0f;
-        s.sustain = 1.0f;
-        s.release = 0.0001f;
-        s.echo_send = (i == 0);
-        bank->samples.push_back(std::move(s));
-        bank->program_to_sample[i] = i;
+        bank->samples.push_back(testing::flat_audio(0.9f, 48, kRate));
+        auto zone = testing::plain_zone(i);
+        zone.release = 0.0001f;
+        zone.echo_send = (i == 0);
+        bank->programs[static_cast<size_t>(i)].zones.push_back(zone);
     }
     bank->echo = plain_delay(100, 0.0f, 0.9f);
 

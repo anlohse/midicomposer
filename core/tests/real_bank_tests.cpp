@@ -68,6 +68,17 @@ std::vector<std::string> files_with(const std::string& extension) {
     return out;
 }
 
+/** Every zone in a bank, flattened -- the parameters a test wants to inspect
+    live on zones now, and most tests do not care which program they came
+    from. */
+std::vector<playback::Zone> all_zones(const playback::SampleBank& bank) {
+    std::vector<playback::Zone> out;
+    for (const auto& program : bank.programs) {
+        out.insert(out.end(), program.zones.begin(), program.zones.end());
+    }
+    return out;
+}
+
 /** Plays a bank hard enough that a bad index or loop would be found. */
 void hammer(const std::shared_ptr<const playback::SampleBank>& bank) {
     playback::Spc700Output out;
@@ -78,7 +89,7 @@ void hammer(const std::shared_ptr<const playback::SampleBank>& bank) {
     std::vector<float> buffer(256 * 2, 0.0f);
     float loudest = 0.0f;
     for (int program = 0; program < 128; ++program) {
-        if (!bank->for_program(program)) continue;
+        if (!bank->has_program(program)) continue;
         out.program_change(0, static_cast<uint8_t>(program), 0);
         // Across the range, because a sample is read fastest at the top and
         // a loop is exercised hardest at the bottom.
@@ -125,20 +136,20 @@ TEST_CASE("every real .spc rips") {
         samples += (*bank)->samples.size();
         CHECK_FALSE((*bank)->empty());
 
-        for (const auto& sample : (*bank)->samples) {
+        for (const auto& zone : all_zones(**bank)) {
             // 60 with no correction is the default the pitch detector leaves
             // behind when it found nothing to measure.
-            if (sample.root_key != 60 || sample.fine_tune_cents != 0.0) {
+            if (zone.root_key != 60 || zone.fine_tune_cents != 0.0) {
                 ++tuned;
-                lowest = std::min(lowest, sample.root_key);
-                highest = std::max(highest, sample.root_key);
+                lowest = std::min(lowest, zone.root_key);
+                highest = std::max(highest, zone.root_key);
             }
             // A root key outside the keyboard means the detector locked onto
             // something absurd, and the instrument would play at a rate no
             // interpolation can help.
-            CHECK(sample.root_key >= 0);
-            CHECK(sample.root_key <= 127);
-            CHECK(std::abs(sample.fine_tune_cents) <= 50.0);
+            CHECK(zone.root_key >= 0);
+            CHECK(zone.root_key <= 127);
+            CHECK(std::abs(zone.fine_tune_cents) <= 50.0);
         }
     }
     // How much of a rip comes back with the game's own envelope rather than a
@@ -149,9 +160,9 @@ TEST_CASE("every real .spc rips") {
     for (const auto& file : files) {
         const auto bank = io::load_spc(file);
         if (!bank) continue;
-        for (const auto& sample : (*bank)->samples) {
-            if (sample.sustain != 1.0f || sample.sustain_rate != 0.0f ||
-                sample.decay != 0.0f || sample.attack != 0.001f) {
+        for (const auto& zone : all_zones(**bank)) {
+            if (zone.sustain != 1.0f || zone.sustain_rate != 0.0f ||
+                zone.decay != 0.0f || zone.attack != 0.001f) {
                 ++with_envelope;
             }
         }
@@ -164,11 +175,11 @@ TEST_CASE("every real .spc rips") {
     for (const auto& file : files) {
         const auto bank = io::load_spc(file);
         if (!bank) continue;
-        for (const auto& sample : (*bank)->samples) {
-            if (sample.sustain != 1.0f || sample.sustain_rate != 0.0f ||
-                sample.decay != 0.0f || sample.attack != 0.001f) {
+        for (const auto& zone : all_zones(**bank)) {
+            if (zone.sustain != 1.0f || zone.sustain_rate != 0.0f ||
+                zone.decay != 0.0f || zone.attack != 0.001f) {
                 ++named;
-                if (!sample.echo_send) ++dry;
+                if (!zone.echo_send) ++dry;
             }
         }
     }
@@ -255,9 +266,32 @@ TEST_CASE("every real .sf2 loads") {
         REQUIRE(bank.has_value());
 
         int programs = 0;
-        for (int p = 0; p < 128; ++p) if ((*bank)->for_program(p)) ++programs;
-        MESSAGE(file, ": ", (*bank)->samples.size(), " samples across ", programs, " programs");
+        size_t zones = 0;
+        size_t multi = 0;
+        for (int p = 0; p < 128; ++p) {
+            if (!(*bank)->has_program(p)) continue;
+            ++programs;
+            const auto count = (*bank)->programs[static_cast<size_t>(p)].zones.size();
+            zones += count;
+            if (count > 1) ++multi;
+        }
+        MESSAGE(file, ": ", (*bank)->samples.size(), " samples, ", zones, " zones across ",
+                programs, " programs, ", multi, " of them multi-sampled");
         CHECK(programs > 0);
+
+        // Where a program has several zones they have to partition the
+        // keyboard rather than pile up on one note; a bank whose zones all
+        // covered everything would be a bank whose ranges were dropped.
+        for (int p = 0; p < 128; ++p) {
+            const auto& program = (*bank)->programs[static_cast<size_t>(p)];
+            if (program.zones.size() < 2) continue;
+            const bool all_full = std::all_of(
+                program.zones.begin(), program.zones.end(),
+                [](const auto& z) { return z.low_key == 0 && z.high_key == 127; });
+            CAPTURE(p);
+            CHECK_FALSE(all_full);
+            break;
+        }
 
         hammer(*bank);
     }
@@ -280,10 +314,11 @@ TEST_CASE("a sample long enough to hold a pitch gets one") {
     for (const auto& file : files) {
         const auto bank = io::load_spc(file);
         if (!bank) continue;
-        for (const auto& sample : (*bank)->samples) {
-            if (sample.data.size() < kLongEnough) continue;
+        for (const auto& zone : all_zones(**bank)) {
+            const auto* audio = (*bank)->sample_of(zone);
+            if (!audio || audio->data.size() < kLongEnough) continue;
             ++longs;
-            if (sample.root_key != 60 || sample.fine_tune_cents != 0.0) ++placed;
+            if (zone.root_key != 60 || zone.fine_tune_cents != 0.0) ++placed;
         }
     }
     MESSAGE("Placed ", placed, " of ", longs, " samples over ", kLongEnough, " frames");
