@@ -2,8 +2,10 @@
 
 #include "base/logger.hpp"
 #include "io/brr.hpp"
+#include "io/sample_pitch.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -36,12 +38,22 @@ constexpr size_t kDirEntryBytes = 4;
 // chosen rather than derived. 256 entries is the whole page.
 constexpr size_t kMaxEntries = 256;
 
-// A rip has no root key. The chip plays a sample at its recorded rate when the
-// pitch register reads 0x1000, and 32000Hz is that rate; everything is treated
-// as recorded at this note so intervals between notes stay right even though
-// the absolute pitch is a convention.
+// Where a sample sits when its pitch could not be measured -- percussion and
+// noise, mostly, which have no pitch to be wrong about.
 constexpr int kAssumedRootKey = 60;
 constexpr int kChipSampleRate = 32000;
+
+// Anything the detector is willing to answer is taken, because the two mistakes
+// are not the same size. A pitch measured loosely puts an instrument a semitone
+// or so out; *no* measurement leaves it at C4, and a sample actually recorded at
+// note 83 then plays two octaves low. Percussion, which has no right answer,
+// costs nothing either way -- so the detector's own floor is the only gate.
+constexpr double kPitchConfidence = 0.0;
+
+// A loop shorter than this cannot hold enough cycles to measure, so the whole
+// sample is used instead. The loop is the better window when there is enough of
+// it; a 32-frame loop is not a window at all.
+constexpr int kUsableLoopFrames = 1024;
 
 // One full block. Below this there is nothing to have decoded.
 constexpr size_t kMinimumSamples = 16;
@@ -136,6 +148,31 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         if (decoded.loop_start >= 0) {
             sample.loop_start = decoded.loop_start;
             sample.loop_end = static_cast<int>(sample.data.size());
+        }
+
+        // ── The pitch, measured rather than assumed ──────────────────────────
+        //
+        // Nothing in an .spc says what note a sample is. Treating them all as
+        // C4 leaves every instrument transposed by its own interval, which is
+        // the loudest thing wrong with a ripped bank. The audio answers instead:
+        // a pitched instrument's loop is periodic by construction, so the
+        // period is measurable and the period is the pitch.
+        //
+        // Measured over the loop when there is one -- the steady state a looped
+        // sample exists to reach -- and over the whole thing when there is not.
+        const bool loop_is_usable = sample.loop_start >= 0 &&
+                                    sample.loop_end - sample.loop_start >= kUsableLoopFrames;
+        const auto pitch = estimate_pitch(sample.data, sample.source_rate,
+                                          loop_is_usable ? sample.loop_start : 0,
+                                          loop_is_usable ? sample.loop_end : -1);
+        if (pitch.frequency > 0.0 && pitch.confidence >= kPitchConfidence) {
+            // Rounded to a key, with the remainder kept as cents. Dropping the
+            // remainder is the difference between an instrument that is in tune
+            // and one that is a third of a semitone sharp -- and a bank where
+            // every instrument is differently sharp is a bank that cannot be
+            // played together.
+            sample.root_key = static_cast<int>(std::lround(pitch.midi_note));
+            sample.fine_tune_cents = (sample.root_key - pitch.midi_note) * 100.0;
         }
         // The envelope is the one thing a snapshot cannot give: the DSP's ADSR
         // registers describe the eight voices at one instant, not the

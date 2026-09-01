@@ -91,6 +91,8 @@ target_sources(midi_composer_core
         src/io/sf2_file.cpp
         src/io/brr.hpp
         src/io/brr.cpp
+        src/io/sample_pitch.hpp
+        src/io/sample_pitch.cpp
         src/io/spc_file.hpp
         src/io/spc_file.cpp
         src/shell/application.hpp
@@ -248,6 +250,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/playback_tests.cpp
         tests/preferences_tests.cpp
         tests/real_bank_tests.cpp
+        tests/sample_pitch_tests.cpp
         tests/sf2_tests.cpp
         tests/spc700_tests.cpp
         tests/spc_file_tests.cpp
