@@ -62,6 +62,7 @@ target_sources(midi_composer_core
         src/playback/output_plugin.hpp
         src/playback/routing_output.hpp
         src/playback/routing_output.cpp
+        src/playback/gaussian_table.hpp
         src/playback/sample_bank.hpp
         src/playback/spc700_output.hpp
         src/playback/spc700_output.cpp
