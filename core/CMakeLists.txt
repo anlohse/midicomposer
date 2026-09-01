@@ -20,6 +20,17 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # reliable source of heap corruption.
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+    # Symbols in the release build too.
+    #
+    # A .pdb changes nothing about the code that ships -- /Zi is not /Od -- but
+    # it is the difference between a crash report that names a function and one
+    # that names a hex offset into a binary nobody kept. The file stays beside
+    # the executable in the build tree and is simply not installed.
+    add_compile_options($<$<CONFIG:Release>:/Zi>)
+    add_link_options($<$<CONFIG:Release>:/DEBUG>
+                     $<$<CONFIG:Release>:/OPT:REF>
+                     $<$<CONFIG:Release>:/OPT:ICF>)
 endif()
 
 include(options)
@@ -98,6 +109,8 @@ target_sources(midi_composer_core
         src/io/spc_file.cpp
         src/shell/application.hpp
         src/shell/application.cpp
+        src/shell/crash_report.hpp
+        src/shell/crash_report.cpp
         src/shell/file_dialogs.hpp
         src/shell/file_dialogs.cpp
         src/shell/ui_bundle.hpp
@@ -129,7 +142,10 @@ target_link_libraries(midi_composer_core
 target_link_libraries(midi_composer_core PUBLIC clap_headers)
 
 if(WIN32)
-    target_link_libraries(midi_composer_core PUBLIC winmm.lib comdlg32.lib)
+    # dbghelp turns a crash address into a function and a line. Without it the
+    # log can only say the process died at 0x00000000000da28b, which is a fact
+    # nobody can act on.
+    target_link_libraries(midi_composer_core PUBLIC winmm.lib comdlg32.lib dbghelp.lib)
 endif()
 
 target_compile_definitions(midi_composer_core

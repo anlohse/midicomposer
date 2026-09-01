@@ -98,6 +98,20 @@ std::filesystem::path Preferences::plugin_folder() {
 #endif
 }
 
+std::filesystem::path Preferences::webview_storage_folder() {
+#ifdef _WIN32
+    const auto local = env("LOCALAPPDATA");
+    if (local.empty()) return {};
+    return to_path(local) / "MIDI Composer" / "Webview";
+#else
+    const auto cache = env("XDG_CACHE_HOME");
+    if (!cache.empty()) return to_path(cache) / "midi-composer" / "webview";
+    const auto home = env("HOME");
+    if (home.empty()) return {};
+    return to_path(home) / ".cache" / "midi-composer" / "webview";
+#endif
+}
+
 void Preferences::load(const std::filesystem::path& path) {
     m_path = path;
     if (m_path.empty()) return;

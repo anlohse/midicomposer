@@ -64,6 +64,23 @@ public:
      */
     [[nodiscard]] static std::filesystem::path plugin_folder();
 
+    /**
+     * Where the webview keeps its profile.
+     *
+     * Left to itself the webview puts this under the temporary directory, and
+     * a profile in a temporary directory is a profile somebody else is
+     * entitled to delete: disk cleanup empties it on a schedule, and virus
+     * scanners watch it more closely than anywhere else on the machine. When
+     * it goes missing or is locked mid-run, creating the webview fails -- and
+     * the failure arrives asynchronously, through a callback that hands back a
+     * null environment, which the library it comes from does not check.
+     *
+     * So the application names the folder itself. Local rather than roaming,
+     * for the same reason as the plugins: it is a cache of one machine's
+     * browser state, sometimes hundreds of megabytes of it.
+     */
+    [[nodiscard]] static std::filesystem::path webview_storage_folder();
+
     /** Read a file if there is one. Absent or unparseable is not an error. */
     void load(const std::filesystem::path& path);
 
