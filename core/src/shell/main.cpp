@@ -1,6 +1,7 @@
 #include "application.hpp"
 #include "app/preferences.hpp"
 #include "base/logger.hpp"
+#include "shell/com_apartment.hpp"
 #include "shell/crash_report.hpp"
 #include "shell/file_dialogs.hpp"
 #include "shell/ui_bundle.hpp"
@@ -97,6 +98,16 @@ int main() {
     // rather than silent.
     midi_composer::shell::install_crash_reporting();
     midi_composer::shell::log_process_context();
+
+    // Before the core, because starting the audio device claims the main
+    // thread for a multithreaded apartment if nobody claimed it first -- and
+    // the webview cannot be created on one of those.
+    if (!midi_composer::shell::initialize_ui_apartment()) {
+        die("claiming the main thread for the user interface",
+            "Something in this process put the main thread into a multithreaded "
+            "apartment before the application started.");
+    }
+
     app_context.core().initialize();
 
     // The webview is created here, and creating it is the step most likely to
@@ -106,8 +117,7 @@ int main() {
     // environment, and saucer dereferences it -- so the whole process dies at
     // this line with an access violation. Hence the log lines around it.
     log_webview_environment();
-    MC_LOG_INFO("Main thread apartment before the webview: {}",
-                midi_composer::shell::current_apartment());
+    MC_LOG_INFO("  main thread apartment = {}", midi_composer::shell::current_apartment());
     const auto storage_path = prepared_storage_path();
     MC_LOG_INFO("Creating the webview");
     std::unique_ptr<saucer::smartview<>> view_holder;
