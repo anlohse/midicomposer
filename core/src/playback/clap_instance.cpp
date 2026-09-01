@@ -233,6 +233,13 @@ void ClapInstance::pitch_bend(uint8_t channel, int16_t value, int64_t when_us) {
     push(q);
 }
 
+std::vector<ClapInstance::ProgramInfo> ClapInstance::programs() const {
+    std::vector<ProgramInfo> out;
+    out.reserve(128);
+    for (int program = 0; program < 128; ++program) out.push_back({program, {}});
+    return out;
+}
+
 std::optional<base::Error> ClapInstance::failure() const {
     std::lock_guard lock(m_failure_mutex);
     return m_failure;

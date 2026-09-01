@@ -428,19 +428,21 @@ export class MidiEventsPanel extends LitElement {
             <div class="field-group">
                 <label for="instrument">Instrument</label>
                 <select id="instrument" class="instrument"
-                        title=${this.programNames.length
-                            ? 'Instruments the selected output has loaded'
+                        title=${this.programs.length
+                            ? this.programs.some(p => p.name)
+                                ? 'Instruments the selected output has loaded'
+                                : 'This plugin decides what a program change means; it offers no names'
                             : percussion
                                 ? 'Channel 10 is the percussion channel — programs select a drum kit'
                                 : 'General MIDI program for this track'}
                         @change=${(e: Event) => this.send('set_track_program', {
                             trackId, program: parseInt((e.target as HTMLSelectElement).value),
                         })}>
-                    ${this.programNames.length
-                        ? this.programNames.map((name, program) => name
-                            ? html`<option value=${program}
-                                ?selected=${this.trackProgram(track) === program}>${program + 1}. ${name}</option>`
-                            : '')
+                    ${this.programs.length
+                        ? this.programs.map(({ program, name }) => html`
+                            <option value=${program}
+                                ?selected=${this.trackProgram(track) === program}
+                            >${program + 1}${name ? `. ${name}` : ''}</option>`)
                         : GM_FAMILIES.map(family => html`
                             <optgroup label=${family.name}>
                                 ${family.programs.map((name, i) => {
@@ -461,15 +463,18 @@ export class MidiEventsPanel extends LitElement {
     @state() private availableOutputs: OutputChoice[] = [];
 
     /**
-     * The instrument list the selected output declares, or empty for General
-     * MIDI.
+     * The programs the selected output declares, or empty for General MIDI.
      *
-     * A sampler's program 11 is whatever its bank put there, and offering the
-     * General MIDI names for it tells the user something false rather than
-     * nothing. Re-read whenever the output changes, because loading a bank is
-     * exactly what changes this.
+     * Three cases, and they read differently: no entries means General MIDI --
+     * a port, or the internal synth whose families really are the GM ones.
+     * Entries with names are a sampler's bank. Entries without names are a
+     * hosted plugin, which decides for itself what a program change means and
+     * offers no way to ask, so the number is all there is to show.
+     *
+     * Re-read whenever the output changes, because loading a bank is exactly
+     * what changes this.
      */
-    @state() private programNames: string[] = [];
+    @state() private programs: Array<{ program: number; name: string }> = [];
 
     async connectedCallback() {
         super.connectedCallback();
@@ -488,12 +493,13 @@ export class MidiEventsPanel extends LitElement {
 
     private async loadProgramNames() {
         try {
-            this.programNames = await CoreBridge.sendCommand<string[]>('get_program_names') ?? [];
+            this.programs = await CoreBridge.sendCommand<
+                Array<{ program: number; name: string }>>('get_program_names') ?? [];
         } catch (err) {
             // The General MIDI names are the fallback, and they are what was
             // being shown before this existed.
             console.error('Failed to read the instrument list', err);
-            this.programNames = [];
+            this.programs = [];
         }
     }
 
