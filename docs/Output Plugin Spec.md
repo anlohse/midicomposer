@@ -628,6 +628,233 @@ question at a time.
    Look-ahead is still not implemented. Events arrive up to a loop period late
    and are applied at the first frame of the block they land in, which is why
    "overdue means now" is a tested property rather than an accident.
+5. **The SPC-700 itself** ✅ Done, and large enough to have its own section:
+   see §11a. Stage 3 deferred it for want of three tables; two of the three now
+   have real answers and the third is deliberately still a stand-in.
+
+## 11a. The SPC-700
+
+Stage 3 shipped as *Internal Synth* rather than as an SPC-700, and said why: the
+chip's character lives in the gaussian interpolation kernel, the ADSR rate
+table, and BRR decoding, and inventing those from memory would mean numbers that
+look authentic and are not. This is what happened when they stopped being
+invented.
+
+### 11a.1 A separate output, not an evolution of the synth
+
+Internal Synth generates its waveforms in code and takes no files. The sampler
+takes nothing else. Merging them would give one output whose behaviour depended
+on whether a bank happened to be loaded, and whose settings dialog was half
+irrelevant either way. They share a shape and nothing else, so the SPC-700 is
+its own `OutputPlugin` and the synth is left as the thing that always makes a
+sound with nobody configuring anything (§7).
+
+### 11a.2 The bank is immutable, and that is the whole concurrency answer
+
+`SampleBank` is built once and never mutated. The audio thread takes a
+`shared_ptr<const SampleBank>` at the top of each block, and **every sounding
+voice holds its own reference**. Loading a bank builds a new one and publishes
+it; the old one lives until the last block and the last note reading it are
+finished.
+
+That is the entire answer to "replace the instruments while sound is playing",
+and it is worth stating as one sentence because the alternatives are all worse:
+locking the audio thread against the loader, double-buffering with a swap flag,
+or refusing to load while anything sounds. A note started on the old bank
+finishes on it, which is also the musically correct behaviour.
+
+The one cost: the last reference is often released *by the audio thread*, so a
+bank's destructor can run there. For a few megabytes of vectors that is a cheap
+operation, and the alternative -- handing the corpse to another thread to bury
+-- is a queue and a thread for a problem nothing has measured.
+
+### 11a.3 It renders at the host's rate
+
+The chip runs at 32kHz and the authentic arrangement would be to run the DSP
+there and resample at the edge. A sampler resamples inherently -- reading a
+sample at a rate *is* resampling -- so what 32kHz would actually change is where
+the interpolation kernel's cutoff lands. That was a hypothetical while the
+kernel was a stand-in; now that the kernel is real (§11a.6) it is a real
+consideration, and still not one anything has been heard to need. Left alone
+until there is something to hear.
+
+### 11a.4 Where the samples come from
+
+**SoundFont for instruments, `.spc` for ripping.** They answer different
+questions, and the difference is not one of quality.
+
+An `.spc` is a savestate of the audio subsystem frozen mid-song: 64KB of chip
+RAM, the SPC700's registers, and the 128 DSP registers. The samples are in
+there and are findable without guessing -- DSP register `$5D` names the page
+holding the sample directory, four bytes an entry giving start and loop
+addresses. What is *not* in there is which sample is which instrument, what
+pitch each was recorded at, or how each is meant to fade. That lives in the
+game's own music driver, which differs per game and is code rather than data.
+The DSP's per-voice ADSR registers describe eight voices at one instant, not a
+table of instruments.
+
+SF2 answers what a composition actually asks: presets addressed by bank and
+program -- exactly what a program change selects -- with loop points, root keys,
+tuning and envelopes already stated.
+
+Read from SF2: a preset's first instrument, that instrument's first zone naming
+a sample, loop points, root key, tuning, volume envelope. Skipped: key ranges,
+velocity layers, stereo pairs, modulators, the filter. A layered orchestral bank
+therefore sounds thinner than it should. That is the honest shape of one sample
+per program, not a parsing bug.
+
+### 11a.5 Telling a ripped instrument from a coincidence
+
+A sample directory is 256 entries whether or not the game filled them, and the
+rest of the page is whatever was in memory. Around ninety stale entries per file
+happen to point at bytes with a BRR end flag somewhere near, so **"it decodes"
+turns out to be no test at all** -- it produced about a hundred instruments per
+rip where a SNES game of that size loads around twenty-five, most of them a
+millisecond of noise.
+
+The loop address is the test, and it is a hardware constraint rather than a
+heuristic: on real hardware the loop has to point at a BRR block *inside the
+sample it belongs to*. So it must fall within the bytes just decoded, and a
+whole number of nine-byte blocks from the start. Stale entries fail instantly --
+their loops point tens of kilobytes away at no boundary in particular. Across
+ninety-two Chrono Trigger rips this takes 9221 candidates down to 2237, an
+average of 24 a file. Entries aliasing one sample are collapsed too.
+
+**Pitch is measured, not assumed.** A rip states no root key, and treating every
+sample as C4 leaves each instrument transposed by its own interval -- the
+loudest thing wrong with a ripped bank, because it is wrong *per instrument*
+rather than wrong overall, and a sample recorded at note 83 plays two octaves
+low. A pitched instrument's loop is periodic by construction, so the period is
+measurable and the period is the pitch: normalised autocorrelation, preferring
+the shortest lag within a margin of the best to avoid the octave error, with the
+peak interpolated so the answer is not quantised to whole samples. The
+fractional MIDI note is kept and its remainder becomes the sample's fine tuning.
+
+Two calibrations the real files corrected, both of which had been reasoned
+backwards:
+
+- **The window.** Measuring over the loop is right when the loop is long enough
+  to hold cycles. Most ripped loops are 32 frames and cannot; falling back to
+  the whole sample took detection from 27% of samples to 46%.
+- **The threshold.** A high confidence gate looked prudent -- a made-up pitch
+  seems worse than none. It is not, here, because the two mistakes are different
+  sizes: a loosely measured pitch is a semitone out, while *no* measurement
+  leaves the sample at C4 and octaves away. Percussion, which has no right
+  answer, costs nothing either way. The gate is now the detector's own floor.
+
+710 of the 792 samples long enough to hold a pitch get one; the remaining tenth
+is choirs, wind and sound effects with no fundamental to find.
+
+### 11a.6 Which tables are real, and their provenance
+
+**The gaussian kernel is the chip's**: 512 twelve-bit values from the S-DSP's
+mask ROM. **The ADSR rate table is still not**, and the envelope remains a
+seconds-based stand-in.
+
+Provenance mattered more than availability. Every SNES emulator has both tables,
+but blargg's `snes_spc` is LGPL and the ports are derivatives of it; one
+BSD-licensed project's own README says its envelope code came from blargg's, so
+the permissive licence is on paper rather than in the history. Attaching a
+licence to this project for two tables would be a heavy price for data that is a
+measurement of a chip rather than anyone's expression. The SnesLab wiki
+publishes the same dump under Creative Commons Attribution, which asks for
+credit and gets it in `gaussian_table.hpp`.
+
+Checked before believed, because a transcription cannot be reviewed by reading
+it: the four taps the chip uses at any fractional position sum to 2048 -- unity
+in its fixed point -- across all 256 positions, within the one count that
+twelve-bit quantisation costs. The tap ordering was derived from the table's own
+shape rather than assumed. Both are tests, since this is data an edit could
+break silently.
+
+Worth recording: the computed kernel it replaced was close. Where the chip
+weights its taps (0.181, 0.637, 0.183, 0) the approximation had (0.176, 0.644,
+0.176, 0.003). What changed is that the error is now zero rather than unknown.
+
+BRR is decoded with the documented predictor coefficients written as the
+hardware's shifts, because the rounding of a right shift on a negative number is
+part of the result. The tests check the decoder against those coefficients,
+which is not the same as checking it against a console; without a reference rip
+to compare with, "bit-exact" is a claim this cannot make.
+
+### 11a.7 The echo is data, not a table
+
+Unlike the kernel and the rates, the echo is *per game* and sits in the DSP
+registers of any `.spc` -- delay, feedback, volume, and the eight FIR taps. A
+rip therefore carries the reverb the piece was written to sound through.
+
+The chip's arrangement, not a reverb of our own: read the delay line, run the
+taps across what comes out, add that to the output, write the dry signal plus
+the filtered echo back in. **The filter being inside the feedback path** is what
+makes repeats darken rather than merely fade, and is most of why this sounds
+like a room instead of a delay pedal.
+
+The line is sized once for the longest delay the chip allows, so changing rips
+never allocates on the audio thread, and it is cleared when the length changes
+rather than replaying what the previous piece left in it. A filter with gain
+above one inside a feedback path runs away, so a rip declaring one is loaded
+with the echo off and a line saying why.
+
+Ninety-one of ninety-two rips declare an echo, with delays spread from 48 to
+240ms and a mean feedback of 0.59. Random bytes do not average to a musical
+feedback across ninety-two independent files, which was the evidence the
+register map was right before documentation confirmed it.
+
+### 11a.8 The envelope
+
+Decay and release are exponential; attack is linear. Both authorities agree and
+they agree with each other: the chip's decay subtracts a proportion of what is
+left rather than a fixed step, and the SoundFont specification states its
+envelope times in decibels, which is the same curve said differently. A linear
+fall holds a note up too long and then arrives at the sustain level abruptly.
+
+Release is the one place the chip is linear and this deliberately is not: a note
+that slides straight to zero clicks, and the SoundFont curve is the better
+behaviour to share with the banks that ask for it.
+
+**Sustain holds rather than falling.** The chip keeps decaying there at a rate
+from its ADSR registers, and nothing here knows what that rate should be -- a
+SoundFont holds, and a rip states nothing -- so a fall would be inventing how
+every instrument ends. This is the same refusal as §11a.5's, applied to the one
+place the data does not reach.
+
+### 11a.9 What an output's programs are called
+
+The instrument list was the 128 General MIDI names always. Right for a MIDI
+port, a lie for anything else: a sampler's program 11 is whatever its bank put
+there, and calling it "Music Box" tells the user something false rather than
+nothing.
+
+Three answers are needed and they are all different, which is why an output
+declares *entries* -- a number and a possibly-blank name -- rather than a list
+of names:
+
+- **No entries** means General MIDI. A port, and the internal synth, whose
+  instrument families really are the GM ones.
+- **Entries with names** are a sampler's bank: only the programs it filled, so a
+  rip offers its two dozen rather than 128 slots with two dozen useful.
+- **Entries without names** are a hosted plugin. CLAP has no way to ask:
+  `clap.preset-load` loads a preset from a path and the preset-discovery factory
+  indexes preset files on disk, and neither maps onto the 128 program slots. A
+  number is not helpful, but it is true.
+
+A SoundFont names a program after its *preset* -- the file calls the sample
+"Piano C4" and the preset "Grand Piano", and the second is what somebody is
+choosing between. A rip has no names at all, so the label is built from what was
+measured: `Sample 32 (B5, 415ms, looped)`. Length separates a percussion hit
+from a held instrument at a glance, which is what turns auditioning two dozen
+unknowns into reading a list.
+
+### 11a.10 Still missing
+
+- **The ADSR rate table.** Documented and findable, but nothing produces
+  register-valued ADSR: SF2 gives times, a rip gives nothing. It would be a
+  table with no consumer.
+- **Sustain decay**, for the same reason (§11a.8).
+- **Per-voice echo send** (`EON`): everything currently feeds the echo.
+- **Auditioning.** A program still has to be assigned to a track and played to
+  be heard. With two dozen unknowns in a rip, the naming in §11a.9 helps and
+  does not finish the job.
 
 ## 12. Deliberately not doing
 
