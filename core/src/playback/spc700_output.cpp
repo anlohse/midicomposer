@@ -336,33 +336,67 @@ float Spc700Output::sample_at(const Sample& sample, double position) {
 
 bool Spc700Output::advance_envelope(Voice& v) const {
     const auto& s = *v.sample;
-    const auto per_frame = [this](float seconds) {
-        return seconds <= 0.0f ? 1.0f : 1.0f / (seconds * static_cast<float>(m_sample_rate));
+    const float rate = static_cast<float>(m_sample_rate);
+
+    // How much of the remaining distance to close each frame, for a stage that
+    // is meant to take `seconds`. See the note on Decay below for why these
+    // stages are exponential and Attack is not.
+    const auto approach = [rate](float seconds) {
+        // kSettle time constants is where "it has arrived" is drawn: about one
+        // percent of the way left, which is -40dB and inaudible under anything.
+        constexpr float kSettle = 4.6f;
+        return seconds <= 0.0f ? 1.0f : 1.0f - std::exp(-kSettle / (seconds * rate));
     };
 
     switch (v.stage) {
         case Stage::Attack:
-            v.envelope += per_frame(s.attack);
+            // Linear, which is what both the chip and the SoundFont
+            // specification do: an attack that approached its peak
+            // asymptotically would never quite start the note.
+            v.envelope += s.attack <= 0.0f ? 1.0f : 1.0f / (s.attack * rate);
             if (v.envelope >= 1.0f) { v.envelope = 1.0f; v.stage = Stage::Decay; }
             break;
+
         case Stage::Decay:
-            if (s.decay <= 0.0f || v.envelope <= s.sustain) {
+            // ── Exponential, not linear ──────────────────────────────────────
+            //
+            // The chip's decay subtracts a proportion of what is left rather
+            // than a fixed step, and the SoundFont specification says the same
+            // thing in its own words -- its envelope times are linear in
+            // decibels, which is exponential in amplitude. A linear fall is
+            // wrong for both, and wrong in an audible way: it holds the note up
+            // too long and then arrives at the sustain level abruptly, where a
+            // real instrument gives up most of its energy immediately and
+            // trails off.
+            if (s.decay <= 0.0f) {
                 v.envelope = s.sustain;
                 v.stage = Stage::Sustain;
             } else {
-                v.envelope -= (1.0f - s.sustain) * per_frame(s.decay);
-                if (v.envelope <= s.sustain) { v.envelope = s.sustain; v.stage = Stage::Sustain; }
+                v.envelope += (s.sustain - v.envelope) * approach(s.decay);
+                // Within a hair of the target is the target; an exponential
+                // never actually reaches it.
+                if (v.envelope - s.sustain <= 0.001f) {
+                    v.envelope = s.sustain;
+                    v.stage = Stage::Sustain;
+                }
             }
             break;
+
         case Stage::Sustain:
-            // A sustain of zero is an instrument that dies on its own -- a
-            // plucked string, most of a percussion kit -- and holding the key
-            // does not bring it back.
-            if (v.envelope <= 0.0f) return false;
+            // Held, not decaying. The chip keeps falling here at its own
+            // sustain rate, but nothing in this codebase knows what that rate
+            // should be -- a SoundFont holds, and a rip states nothing -- so
+            // inventing a fall would be inventing how every instrument ends.
+            if (v.envelope <= kSilence) return false;
             break;
+
         case Stage::Release:
-            v.envelope -= per_frame(s.release);
-            if (v.envelope <= 0.0f) return false;
+            // Exponential for the same reason as decay. The chip's release is
+            // the one place it goes linear; a note that ends by sliding
+            // straight to zero clicks, and the specification's curve is the
+            // better behaviour to share with SoundFont banks.
+            v.envelope -= v.envelope * approach(s.release);
+            if (v.envelope <= kSilence) return false;
             break;
     }
     return true;

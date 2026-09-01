@@ -381,3 +381,122 @@ TEST_CASE("interpolating between two samples stays between them") {
         CHECK(buffer[static_cast<size_t>(i) * 2] >= buffer[static_cast<size_t>(i - 1) * 2]);
     }
 }
+
+// ── The envelope's shape ─────────────────────────────────────────────────────
+
+namespace {
+
+/** The output level frame by frame, for one held note on a steady sample. */
+std::vector<float> envelope_of(const Sample& sample, int frames, bool release_after = false) {
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank_with(sample));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    if (release_after) out.note_off(0, 60, frames * 1'000'000LL / (2 * kRate));
+
+    std::vector<float> buffer(static_cast<size_t>(frames) * 2, 0.0f);
+    out.begin_block(0);
+    out.render(buffer.data(), frames);
+
+    std::vector<float> level(static_cast<size_t>(frames));
+    for (int i = 0; i < frames; ++i) level[static_cast<size_t>(i)] = buffer[static_cast<size_t>(i) * 2];
+    return level;
+}
+
+Sample steady_sample() {
+    Sample s = flat_sample(1.0f, 4000);
+    s.loop_start = 0;
+    s.loop_end = 4000;
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("the attack rises in a straight line") {
+    Sample s = steady_sample();
+    s.attack = 0.02f;          // 960 frames
+    s.decay = 0.0f;
+    s.sustain = 1.0f;
+
+    const auto level = envelope_of(s, 960);
+    // A quarter of the way up at a quarter of the time, and so on: what
+    // distinguishes a linear attack from a curved one.
+    for (int fraction = 1; fraction <= 3; ++fraction) {
+        const auto at = static_cast<size_t>(960 * fraction / 4);
+        CAPTURE(fraction);
+        CHECK(level[at] == doctest::Approx(level[959] * fraction / 4.0f).epsilon(0.05));
+    }
+}
+
+TEST_CASE("the decay gives up most of its distance early") {
+    Sample s = steady_sample();
+    s.attack = 0.0f;
+    s.decay = 0.05f;           // 2400 frames
+    s.sustain = 0.0f;
+
+    const auto level = envelope_of(s, 2400);
+    const float start = level[1];
+
+    // Exponential, so half the time is far more than half the fall. A linear
+    // decay would sit at 0.5 here, which is what this used to do.
+    const float halfway = level[1200] / start;
+    CHECK(halfway < 0.2f);
+    CHECK(halfway > 0.0f);
+
+    // And it is still falling all the way, rather than arriving and flattening.
+    CHECK(level[600] > level[1200]);
+    CHECK(level[1200] > level[2000]);
+}
+
+TEST_CASE("the decay lands on the sustain level and stays there") {
+    Sample s = steady_sample();
+    s.attack = 0.0f;
+    s.decay = 0.01f;
+    s.sustain = 0.5f;
+
+    const auto level = envelope_of(s, 4000);
+    const float peak = level[1];
+    // Held, not still sliding: a SoundFont sustains, and nothing here knows
+    // what rate the chip would have fallen at.
+    CHECK(level[2000] == doctest::Approx(peak * 0.5f).epsilon(0.05));
+    CHECK(level[3900] == doctest::Approx(level[2000]).epsilon(0.01));
+}
+
+TEST_CASE("the release curves rather than sliding to zero") {
+    Sample s = steady_sample();
+    s.attack = 0.0f;
+    s.decay = 0.0f;
+    s.sustain = 1.0f;
+    s.release = 0.04f;
+
+    const auto level = envelope_of(s, 3840, /*release_after*/ true);
+    const int released_at = 1920;
+    const float start = level[released_at + 10];
+    REQUIRE(start > 0.0f);
+
+    // Same shape as the decay, and for the same reason: a note that slides
+    // straight to zero clicks at the end.
+    CHECK(level[released_at + 960] / start < 0.2f);
+    CHECK(level[released_at + 960] > 0.0f);
+}
+
+TEST_CASE("a voice ends rather than fading forever") {
+    // An exponential never reaches zero, so something has to decide the note
+    // has stopped mattering -- otherwise every note ever played keeps a voice.
+    Sample s = steady_sample();
+    s.attack = 0.0f;
+    s.release = 0.005f;
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank_with(s));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    peak_of_block(out, 128, 0);
+    out.note_off(0, 60, 0);
+    peak_of_block(out, kRate / 4, 1'000'000);
+    CHECK(out.active_voices() == 0);
+}
