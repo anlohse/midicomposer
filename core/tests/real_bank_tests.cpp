@@ -141,7 +141,26 @@ TEST_CASE("every real .spc rips") {
             CHECK(std::abs(sample.fine_tune_cents) <= 50.0);
         }
     }
+    // How much of a rip comes back with the game's own envelope rather than a
+    // default. The registers only describe the eight voices, so this is
+    // expected to be a minority -- but a real one, and the samples it covers
+    // are the instruments rather than the percussion.
+    size_t with_envelope = 0;
+    for (const auto& file : files) {
+        const auto bank = io::load_spc(file);
+        if (!bank) continue;
+        for (const auto& sample : (*bank)->samples) {
+            if (sample.sustain != 1.0f || sample.sustain_rate != 0.0f ||
+                sample.decay != 0.0f || sample.attack != 0.001f) {
+                ++with_envelope;
+            }
+        }
+    }
     MESSAGE("Ripped ", ripped, " of ", files.size(), " files, ", samples, " samples in total");
+    MESSAGE("Envelopes from the game for ", with_envelope, " of ", samples, " samples");
+    // Every file had between two and eight voices configured when measured; if
+    // this went to zero the SRCN mapping has broken.
+    CHECK(with_envelope > files.size());
     MESSAGE("Pitch measured for ", tuned, " of ", samples, " samples; root keys ",
             lowest, " to ", highest);
     CHECK(ripped == files.size());

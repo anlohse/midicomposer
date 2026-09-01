@@ -24,12 +24,13 @@ namespace midi_composer::playback {
  * when a ninth note arrives, and a bank the user supplies. That is the shape.
  *
  * Three things make the real chip sound like itself: the gaussian interpolation
- * kernel, the ADSR rate table, and BRR decoding. Two of the three are now the
- * real ones -- the kernel is the chip's own 512-entry ROM table (see
- * gaussian_table.hpp), and BRR is decoded by whatever reads an `.spc`, so audio
- * is already decoded by the time it reaches a Sample. The envelope is still a
- * plain seconds-based one rather than the chip's rate table, and is still
- * described as a stand-in rather than dressed up as the real thing.
+ * kernel, the ADSR rate table, and BRR decoding. All three are now the real
+ * ones. The kernel is the chip's own 512-entry ROM table (gaussian_table.hpp);
+ * BRR is decoded by whatever reads an `.spc`, so audio is already decoded by
+ * the time it reaches a Sample; and the envelope times a rip carries come from
+ * the chip's documented rate tables by way of its ADSR registers
+ * (io/spc_adsr.hpp). A bank that states none of that still gets defaults, which
+ * is a stand-in and says so.
  *
  * ── Why it renders at the host's rate ────────────────────────────────────────
  *

@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "io/brr.hpp"
+#include "io/spc_adsr.hpp"
 #include "io/spc_file.hpp"
 #include "playback/spc700_output.hpp"
 
@@ -402,4 +403,64 @@ TEST_CASE("a sample too short to measure is not given a note in its name") {
     CHECK((*bank)->samples[0].root_key == 60);
     CHECK((*bank)->samples[0].fine_tune_cents == 0.0);
     CHECK(label.find("ms") != std::string::npos);
+}
+
+TEST_CASE("a voice's ADSR registers reach the sample it names") {
+    // The correction to "a snapshot cannot give an envelope": register $x4
+    // says which sample the voice plays, so the eight voices are eight
+    // (sample, envelope) pairs the game itself wrote.
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(8), 0x1000});   // entry 0
+    spec.entries.push_back({0x1400, simple_sample(8), 0x1400});   // entry 1
+
+    auto file = build_spc(spec);
+    // Voice 0 is set to play entry 1, with AR=8 (96ms), DR=3 (290ms),
+    // SL=3 (4/8) and SR=16 (1.2s).
+    file[0x10100 + 0x04] = static_cast<char>(1);
+    file[0x10100 + 0x05] = static_cast<char>(0x80 | (3 << 4) | 8);
+    file[0x10100 + 0x06] = static_cast<char>((3 << 5) | 16);
+
+    const auto bank = io::parse_spc(file, "Rip");
+    REQUIRE(bank.has_value());
+    REQUIRE((*bank)->samples.size() == 2);
+
+    const auto& named = (*bank)->samples[1];
+    CHECK(named.attack == doctest::Approx(0.096f));
+    CHECK(named.decay == doctest::Approx(0.290f));
+    CHECK(named.sustain == doctest::Approx(4.0f / 8));
+    CHECK(named.sustain_rate == doctest::Approx(1.2f));
+
+    // The sample no voice named keeps the defaults rather than borrowing them.
+    const auto& unnamed = (*bank)->samples[0];
+    CHECK(unnamed.sustain == doctest::Approx(1.0f));
+    CHECK(unnamed.sustain_rate == doctest::Approx(0.0f));
+}
+
+TEST_CASE("a voice running GAIN instead of ADSR is left alone") {
+    // GAIN means the driver is shaping the envelope in its own code, which is
+    // not something a snapshot hands over.
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(8), 0x1000});
+
+    auto file = build_spc(spec);
+    file[0x10100 + 0x04] = static_cast<char>(0);
+    file[0x10100 + 0x05] = static_cast<char>(0x00 | (3 << 4) | 8);   // bit 7 clear
+    file[0x10100 + 0x06] = static_cast<char>((3 << 5) | 16);
+
+    const auto bank = io::parse_spc(file, "Rip");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->samples[0].sustain == doctest::Approx(1.0f));
+    CHECK((*bank)->samples[0].sustain_rate == doctest::Approx(0.0f));
+}
+
+TEST_CASE("the sustain rate table's endpoints are what the chip documents") {
+    // Data an edit could break silently, so the two ends and the special case
+    // are stated.
+    CHECK(io::kSustainSeconds[0] == doctest::Approx(0.0f));    // the chip's "infinite"
+    CHECK(io::kSustainSeconds[1] == doctest::Approx(38.0f));
+    CHECK(io::kSustainSeconds[31] == doctest::Approx(0.018f));
+    CHECK(io::kAttackSeconds[0] == doctest::Approx(4.1f));
+    CHECK(io::kAttackSeconds[15] == doctest::Approx(0.0f));    // instant
+    CHECK(io::kDecaySeconds[7] == doctest::Approx(0.037f));
+    CHECK(io::kSustainLevel[7] == doctest::Approx(1.0f));      // decay does nothing
 }

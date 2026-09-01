@@ -37,11 +37,23 @@ struct Sample {
     /** The rate the audio was recorded at, which is rarely the host's. */
     int source_rate{32000};
 
-    /** Seconds. A plain four-stage envelope: the chip's rate table is not
-        reproduced here, so these are times rather than chip rates. */
+    /** Seconds, and a level for sustain. The chip states these as register
+        values and the loaders convert; times are the common language because a
+        SoundFont states times too. */
     float attack{0.002f};
     float decay{0.0f};
     float sustain{1.0f};        // level, 0..1
+
+    /**
+     * How long a held note takes to fade from the sustain level to silence.
+     *
+     * Zero means it holds indefinitely, which is what a SoundFont means and
+     * what most instruments want. The SNES has no such thing -- its sustain
+     * *rate* always decays, and a driver picks "infinite" by setting rate zero
+     * -- so a rip fills this in and a SoundFont leaves it alone.
+     */
+    float sustain_rate{0.0f};
+
     float release{0.08f};
 
     std::string name;

@@ -540,3 +540,59 @@ TEST_CASE("a bank with gaps offers only the programs that are filled") {
     CHECK(programs[1].program == 40);
     CHECK(programs[1].name == "Second");
 }
+
+TEST_CASE("a sustain rate makes a held note fade") {
+    // What the rips ask for: the chip always decays through sustain, and a
+    // driver picks "hold" by setting the rate to zero.
+    Sample s = flat_sample(1.0f, 4000);
+    s.loop_start = 0;
+    s.loop_end = 4000;
+    s.attack = 0.0f;
+    s.decay = 0.0f;
+    s.sustain = 1.0f;
+    s.sustain_rate = 0.05f;
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank_with(s));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+
+    // Block by block, because a block's *peak* sits at its start: measuring one
+    // block against the next reads the level at two moments, where comparing a
+    // peak against a later peak reads almost the same moment twice. That is how
+    // this test first failed while the decay was working correctly.
+    const float first = peak_of_block(out, 512, 0);
+    REQUIRE(first > 0.0f);
+    float previous = first;
+    for (int block = 1; block < 5; ++block) {
+        const float now = peak_of_block(out, 512, static_cast<int64_t>(block) * 20'000);
+        CAPTURE(block);
+        CHECK(now < previous);
+        previous = now;
+    }
+    // And on its way out rather than merely drifting: a fiftieth of where it
+    // started, after a fifth of a second at a 50ms rate.
+    CHECK(previous < first * 0.1f);
+}
+
+TEST_CASE("a sustain rate of zero holds, which is what a SoundFont means") {
+    Sample s = flat_sample(1.0f, 4000);
+    s.loop_start = 0;
+    s.loop_end = 4000;
+    s.attack = 0.0f;
+    s.decay = 0.0f;
+    s.sustain = 1.0f;
+    s.sustain_rate = 0.0f;
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(bank_with(s));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    const float early = peak_of_block(out, 256, 0);
+    const float later = peak_of_block(out, 2048, 1'000'000);
+    CHECK(later == doctest::Approx(early).epsilon(0.01));
+}
