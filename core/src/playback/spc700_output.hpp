@@ -175,6 +175,14 @@ private:
         int   program{0};
     };
 
+    // Steps of fractional position the interpolation kernel is tabulated at.
+    // A power of two so the lookup is a mask rather than a clamp.
+    static constexpr size_t kGaussSteps = 256;
+
+    /** The interpolation weights, built once. See the definition for what this
+        is and, more importantly, what it is not. */
+    static const std::array<std::array<float, 4>, kGaussSteps>& gauss_table();
+
     void   apply(const Event& e);
     void   reset_voices();
     void   start_note(uint8_t channel, uint8_t pitch, uint8_t velocity);

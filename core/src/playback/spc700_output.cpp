@@ -58,7 +58,7 @@ std::vector<Parameter> Spc700Output::parameters() const {
     bank.label    = "Sample bank";
     bank.type     = ParameterType::File;
     bank.headline = true;      // what the status bar shows beside the name
-    bank.filter   = "*.sf2";
+    bank.filter   = "*.sf2;*.spc";
     return {bank};
 }
 
@@ -247,10 +247,51 @@ void Spc700Output::apply(const Event& e) {
     }
 }
 
+const std::array<std::array<float, 4>, Spc700Output::kGaussSteps>&
+Spc700Output::gauss_table() {
+    // ── A gaussian kernel, computed, not the chip's ROM table ────────────────
+    //
+    // The S-DSP reads every sample through a four-point gaussian rather than
+    // linear interpolation, and that filter is a large part of why the console
+    // sounds soft: it rolls off hard well below Nyquist, so a bright sample
+    // comes back rounded. Using Hermite here made everything noticeably
+    // crisper than the hardware ever was.
+    //
+    // The chip's actual table is 512 sixteen-bit values in ROM, and it is not
+    // reproduced here because it is not known to this code -- writing numbers
+    // that look like it would be worse than a stated approximation, since
+    // nobody would ever check them again. What is here is a gaussian of the
+    // right shape and roughly the right width, evaluated once at startup.
+    //
+    // The consequence, stated so it is not discovered later as a surprise: this
+    // is the correct *kind* of filter with the wrong coefficients. Dropping the
+    // real table in means replacing this function and nothing else.
+    static const auto table = [] {
+        std::array<std::array<float, 4>, kGaussSteps> built{};
+        // Chosen for the shape rather than derived: wide enough that the four
+        // taps overlap the way the hardware's do, narrow enough that the kernel
+        // has decayed by the outer taps.
+        constexpr double sigma = 0.62;
+        for (size_t step = 0; step < kGaussSteps; ++step) {
+            const double f = static_cast<double>(step) / kGaussSteps;
+            double sum = 0.0;
+            for (int tap = 0; tap < 4; ++tap) {
+                // Taps sit at -1, 0, +1, +2 around the sample being read.
+                const double distance = (tap - 1) - f;
+                const double weight = std::exp(-(distance * distance) / (2.0 * sigma * sigma));
+                built[step][static_cast<size_t>(tap)] = static_cast<float>(weight);
+                sum += weight;
+            }
+            // Normalised, so a constant signal comes back as itself instead of
+            // gaining or losing level with the fractional position.
+            for (auto& weight : built[step]) weight = static_cast<float>(weight / sum);
+        }
+        return built;
+    }();
+    return table;
+}
+
 float Spc700Output::sample_at(const Sample& sample, double position) {
-    // Four-point Hermite, the same stand-in the internal synth uses. The chip
-    // reads through a gaussian kernel, which is a large part of its character;
-    // that table is not reproduced here rather than guessed at.
     const auto& data = sample.data;
     const int n = static_cast<int>(data.size());
     if (n == 0) return 0.0f;
@@ -264,16 +305,9 @@ float Spc700Output::sample_at(const Sample& sample, double position) {
     const auto at = [&data, n](int i) {
         return data[static_cast<size_t>(std::clamp(i, 0, n - 1))];
     };
-    const float y0 = at(i1 - 1);
-    const float y1 = at(i1);
-    const float y2 = at(i1 + 1);
-    const float y3 = at(i1 + 2);
-
-    const double c0 = y1;
-    const double c1 = 0.5 * (y2 - y0);
-    const double c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    const double c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    return static_cast<float>(((c3 * f + c2) * f + c1) * f + c0);
+    const auto& weights = gauss_table()[static_cast<size_t>(f * kGaussSteps) & (kGaussSteps - 1)];
+    return at(i1 - 1) * weights[0] + at(i1) * weights[1] +
+           at(i1 + 1) * weights[2] + at(i1 + 2) * weights[3];
 }
 
 bool Spc700Output::advance_envelope(Voice& v) const {

@@ -5,6 +5,7 @@
 #include "io/midi_file.hpp"
 #include "io/wav_file.hpp"
 #include "io/sf2_file.hpp"
+#include "io/spc_file.hpp"
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -135,7 +136,15 @@ void CoreFacade::initialize() {
     // belongs, so it hands the reader down rather than the output reaching up.
     m_spc_output.set_bank_loader([](const std::string& path)
                                      -> base::Result<std::shared_ptr<const playback::SampleBank>> {
-        auto loaded = io::load_sf2(path);
+        // By extension, because the two formats are not distinguishable by
+        // guessing: an .spc is a fixed-size snapshot with no chunk structure to
+        // probe, so trying one reader and falling back to the other would mean
+        // reporting whichever failure came second.
+        const bool is_spc = path.size() >= 4 &&
+            std::equal(path.end() - 4, path.end(), ".spc",
+                       [](char a, char b) { return std::tolower(a) == b; });
+
+        auto loaded = is_spc ? io::load_spc(path) : io::load_sf2(path);
         if (!loaded) return std::unexpected(loaded.error());
         return std::shared_ptr<const playback::SampleBank>(*loaded);
     });
