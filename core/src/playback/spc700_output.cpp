@@ -396,10 +396,14 @@ bool Spc700Output::advance_envelope(Voice& v) const {
             break;
 
         case Stage::Sustain:
-            // Held, not decaying. The chip keeps falling here at its own
-            // sustain rate, but nothing in this codebase knows what that rate
-            // should be -- a SoundFont holds, and a rip states nothing -- so
-            // inventing a fall would be inventing how every instrument ends.
+            // The chip decays here too, at a rate of its own, and a rip states
+            // it: register $x6's low five bits, mapped through the documented
+            // table. Zero is the chip's "infinite" and a SoundFont's silence on
+            // the subject, and both mean hold.
+            //
+            // Exponential like the other falling stages, so a held note thins
+            // out rather than ramping to nothing.
+            if (s.sustain_rate > 0.0f) v.envelope -= v.envelope * approach(s.sustain_rate);
             if (v.envelope <= kSilence) return false;
             break;
 

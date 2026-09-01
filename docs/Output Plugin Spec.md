@@ -629,8 +629,9 @@ question at a time.
    and are applied at the first frame of the block they land in, which is why
    "overdue means now" is a tested property rather than an accident.
 5. **The SPC-700 itself** ✅ Done, and large enough to have its own section:
-   see §11a. Stage 3 deferred it for want of three tables; two of the three now
-   have real answers and the third is deliberately still a stand-in.
+   see §11a. Stage 3 deferred it for want of three tables -- the gaussian
+   kernel, the ADSR rates and BRR decoding -- and all three now have real
+   answers.
 
 ## 11a. The SPC-700
 
@@ -748,8 +749,8 @@ is choirs, wind and sound effects with no fundamental to find.
 ### 11a.6 Which tables are real, and their provenance
 
 **The gaussian kernel is the chip's**: 512 twelve-bit values from the S-DSP's
-mask ROM. **The ADSR rate table is still not**, and the envelope remains a
-seconds-based stand-in.
+mask ROM. So is the ADSR rate table, though that took a correction to notice --
+see §11a.6a.
 
 Provenance mattered more than availability. Every SNES emulator has both tables,
 but blargg's `snes_spc` is LGPL and the ports are derivatives of it; one
@@ -776,6 +777,40 @@ hardware's shifts, because the rounding of a right shift on a negative number is
 part of the result. The tests check the decoder against those coefficients,
 which is not the same as checking it against a console; without a reference rip
 to compare with, "bit-exact" is a claim this cannot make.
+
+### 11a.6a The ADSR registers, and a wrong call corrected
+
+This section exists because §11a.10 used to say the chip's ADSR rate table had
+no consumer, and that was wrong.
+
+The reasoning was: an `.spc` is a snapshot, so its per-voice ADSR registers
+describe eight voices at one instant rather than a table of instruments. True as
+far as it goes, and it skipped register `$x4` -- **SRCN**, which says which
+sample each voice is set to play. With that, the eight voices are eight
+(sample, envelope) pairs the game itself wrote, and converting them needs
+exactly the table that was said to have no use.
+
+Measured across ninety-two rips: every file carries an envelope for between two
+and eight distinct samples, mean 4.9, in 76 distinct combinations -- varied
+per-instrument settings rather than one default repeated. 442 of 2237 samples
+come back with the game's own shape, and the ones they cover are the long
+instrument samples rather than the percussion hits.
+
+The tables are Sony's, transcribed on the Super Famicom Development Wiki, and
+they are published as *times* rather than as the counter periods an emulator
+works in. That happens to be the better form here: the envelope is time-based
+and a SoundFont states times, so a rip and a SoundFont end up speaking the same
+language.
+
+Two things this cannot give and does not pretend to:
+
+- **A rip gives *an* envelope for a sample, never *the* envelope.** Wind Scene
+  plays sample 33 on four voices, one instant-and-held and three with a 260ms
+  attack fading over 24 seconds -- one sample, several articulations, which is
+  a normal thing for a driver to do. The most common shape among the voices is
+  taken, because letting voice order decide would be arbitrary.
+- **A voice running GAIN instead of ADSR is skipped.** Its envelope is being
+  shaped by driver code, which a snapshot cannot hand over.
 
 ### 11a.7 The echo is data, not a table
 
@@ -812,11 +847,14 @@ Release is the one place the chip is linear and this deliberately is not: a note
 that slides straight to zero clicks, and the SoundFont curve is the better
 behaviour to share with the banks that ask for it.
 
-**Sustain holds rather than falling.** The chip keeps decaying there at a rate
-from its ADSR registers, and nothing here knows what that rate should be -- a
-SoundFont holds, and a rip states nothing -- so a fall would be inventing how
-every instrument ends. This is the same refusal as §11a.5's, applied to the one
-place the data does not reach.
+**Sustain decays when the source says so, and holds otherwise.** The chip has no
+"hold": its sustain rate always falls, and a driver asks for a held note by
+setting the rate to zero. A SoundFont holds and says nothing about a rate, so it
+gets zero; a rip states one per voice and it is read (§11a.6a). Falling is
+exponential like the other stages, so a held note thins out rather than ramping.
+
+This paragraph previously said the opposite -- that sustain held because nothing
+could know the rate. That was wrong, and how it was wrong is worth keeping.
 
 ### 11a.9 What an output's programs are called
 
@@ -847,11 +885,9 @@ unknowns into reading a list.
 
 ### 11a.10 Still missing
 
-- **The ADSR rate table.** Documented and findable, but nothing produces
-  register-valued ADSR: SF2 gives times, a rip gives nothing. It would be a
-  table with no consumer.
-- **Sustain decay**, for the same reason (§11a.8).
 - **Per-voice echo send** (`EON`): everything currently feeds the echo.
+- **A fuller envelope for a rip.** Only the samples a voice happened to name get
+  the game's own -- about a fifth. The rest keep defaults.
 - **Auditioning.** A program still has to be assigned to a track and played to
   be heard. With two dozen unknowns in a rip, the naming in §11a.9 helps and
   does not finish the job.

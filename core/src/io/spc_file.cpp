@@ -3,11 +3,13 @@
 #include "base/logger.hpp"
 #include "io/brr.hpp"
 #include "io/sample_pitch.hpp"
+#include "io/spc_adsr.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 
 namespace midi_composer::io {
@@ -38,6 +40,14 @@ constexpr size_t kDspDir = 0x5D;
 // sensible addresses across ninety-two files -- so the ones below are believed
 // rather than demonstrated, and the values they yield are range-checked instead
 // of trusted.
+// Per-voice registers, at $x0 through $x9 for voice x. Only three are read:
+// which sample the voice is set to play, and its two ADSR bytes.
+constexpr size_t kVoiceCount   = 8;
+constexpr size_t kVoiceStride  = 0x10;
+constexpr size_t kVoiceSrcn    = 0x04;
+constexpr size_t kVoiceAdsr1   = 0x05;
+constexpr size_t kVoiceAdsr2   = 0x06;
+
 constexpr size_t kDspEchoVolumeLeft  = 0x2C;
 constexpr size_t kDspEchoVolumeRight = 0x3C;
 constexpr size_t kDspFlags           = 0x6C;   // bit 5 disables the echo
@@ -123,7 +133,51 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
     auto bank = std::make_shared<SampleBank>();
     bank->name = name;
 
+    // ── The envelopes the game wrote ─────────────────────────────────────────
+    //
+    // A snapshot describes eight voices at one instant, which is why this was
+    // once dismissed as unusable. What that missed is SRCN: each voice names
+    // the directory entry it is set to play, so the eight voices are eight
+    // (sample, envelope) pairs the game itself configured. Around five distinct
+    // samples a file get a real envelope this way, and they are overwhelmingly
+    // the long ones -- the instruments rather than the percussion.
+    //
+    // Several voices often name the same sample with *different* envelopes --
+    // Wind Scene plays sample 33 on four voices, one of them instant-and-held
+    // and three with a 260ms attack fading over 24 seconds. That is a real
+    // thing a driver does: one sample, several articulations. So a rip gives
+    // *an* envelope the game used with a sample, never *the* envelope, and the
+    // most common one among the voices is the least arbitrary choice available.
+    // Taking whichever voice came first would let voice order decide.
+    std::map<uint8_t, std::vector<std::pair<uint16_t, AdsrRegisters>>> candidates;
+    for (size_t voice = 0; voice < kVoiceCount; ++voice) {
+        const size_t at = voice * kVoiceStride;
+        const uint8_t adsr1 = dsp[at + kVoiceAdsr1];
+        const uint8_t adsr2 = dsp[at + kVoiceAdsr2];
+        const auto adsr = decode_adsr(adsr1, adsr2);
+        // A voice using GAIN instead is running a custom envelope in driver
+        // code, which is not something a snapshot can hand over.
+        if (!adsr.enabled) continue;
+        const auto shape = static_cast<uint16_t>((adsr1 << 8) | adsr2);
+        candidates[dsp[at + kVoiceSrcn]].emplace_back(shape, adsr);
+    }
+
+    std::map<uint8_t, AdsrRegisters> envelope_for_entry;
+    for (const auto& [srcn, voices] : candidates) {
+        std::map<uint16_t, int> votes;
+        for (const auto& [shape, _] : voices) ++votes[shape];
+        uint16_t winner = voices.front().first;
+        int best = 0;
+        for (const auto& [shape, count] : votes) {
+            if (count > best) { best = count; winner = shape; }
+        }
+        for (const auto& [shape, adsr] : voices) {
+            if (shape == winner) { envelope_for_entry.emplace(srcn, adsr); break; }
+        }
+    }
+
     int program = 0;
+    size_t envelopes_applied = 0;
     std::set<uint16_t> seen_starts;
     for (size_t entry = 0; entry < kMaxEntries && program < 128; ++entry) {
         const size_t at = directory + entry * kDirEntryBytes;
@@ -203,14 +257,25 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
             sample.root_key = static_cast<int>(std::lround(pitch.midi_note));
             sample.fine_tune_cents = (sample.root_key - pitch.midi_note) * 100.0;
         }
-        // The envelope is the one thing a snapshot cannot give: the DSP's ADSR
-        // registers describe the eight voices at one instant, not the
-        // instruments. A short attack and a short release let every sample be
-        // auditioned; shaping them is the user's, once there is anywhere to.
+        // Defaults for a sample no voice was pointed at: audible immediately
+        // and held, which is the least wrong thing to do with an unknown.
         sample.attack = 0.001f;
         sample.decay = 0.0f;
         sample.sustain = 1.0f;
+        sample.sustain_rate = 0.0f;
         sample.release = 0.05f;
+
+        if (const auto found = envelope_for_entry.find(static_cast<uint8_t>(entry));
+            found != envelope_for_entry.end()) {
+            sample.attack = found->second.attack;
+            sample.decay = found->second.decay;
+            sample.sustain = found->second.sustain;
+            sample.sustain_rate = found->second.sustain_rate;
+            // Release is deliberately not taken: the chip has no release rate
+            // in ADSR -- key-off runs a fixed linear fade -- and §11a.8 chose a
+            // short curve over that, so a note does not end on a click.
+            ++envelopes_applied;
+        }
 
         // ── Naming what has no name ──────────────────────────────────────────
         //
@@ -281,8 +346,9 @@ base::Result<std::shared_ptr<SampleBank>> parse_spc(const std::string& bytes,
         MC_LOG_INFO("{}: echo {}ms, feedback {:.2f}, volume {:.2f}/{:.2f}", name,
                     echo.delay_ms, echo.feedback, echo.volume_left, echo.volume_right);
     }
-    MC_LOG_INFO("Ripped {}: {} samples from the directory at ${:04X}", name,
-                bank->samples.size(), directory);
+    MC_LOG_INFO("Ripped {}: {} samples from the directory at ${:04X}, {} with the "
+                "game's own envelope", name, bank->samples.size(), directory,
+                envelopes_applied);
     return bank;
 }
 
