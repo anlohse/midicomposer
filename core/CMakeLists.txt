@@ -109,6 +109,8 @@ target_sources(midi_composer_core
         src/io/spc_file.cpp
         src/shell/application.hpp
         src/shell/application.cpp
+        src/shell/com_apartment.hpp
+        src/shell/com_apartment.cpp
         src/shell/crash_report.hpp
         src/shell/crash_report.cpp
         src/shell/file_dialogs.hpp

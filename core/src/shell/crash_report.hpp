@@ -42,8 +42,4 @@ void test_crash_if_asked(const char* moment);
     failures only happen on one side of those. */
 void log_process_context();
 
-/** What apartment the calling thread is in, as text. WebView2 needs a
-    single-threaded one, and other libraries in the process ask for their own. */
-const char* current_apartment();
-
 } // namespace midi_composer::shell

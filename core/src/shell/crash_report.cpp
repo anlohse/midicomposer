@@ -6,7 +6,6 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <objbase.h>
 #include <dbghelp.h>
 
 #include <cstdlib>
@@ -170,21 +169,6 @@ void test_crash_if_asked(const char* moment) {
     *nowhere = 1;
 }
 
-const char* current_apartment() {
-    APTTYPE type{};
-    APTTYPEQUALIFIER qualifier{};
-    if (FAILED(CoGetApartmentType(&type, &qualifier))) {
-        return "none -- COM is not initialised on this thread";
-    }
-    switch (type) {
-        case APTTYPE_STA:     return "single-threaded (STA)";
-        case APTTYPE_MTA:     return "multithreaded (MTA)";
-        case APTTYPE_NA:      return "neutral";
-        case APTTYPE_MAINSTA: return "main single-threaded";
-        default:              return "unknown";
-    }
-}
-
 void log_process_context() {
     HANDLE token = nullptr;
     bool elevated = false;
@@ -218,7 +202,6 @@ void install_crash_reporting() {}
 void reassert_crash_reporting(const char*) {}
 void test_crash_if_asked(const char*) {}
 void log_process_context() {}
-const char* current_apartment() { return "not applicable on this platform"; }
 } // namespace midi_composer::shell
 
 #endif
