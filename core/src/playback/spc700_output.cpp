@@ -250,41 +250,52 @@ void Spc700Output::reset_voices() {
 void Spc700Output::start_note(uint8_t channel, uint8_t pitch, uint8_t velocity) {
     if (!m_block_bank) return;    // nothing loaded: the note is simply silent
     const auto& ch = m_channels[channel & 0x0F];
+
     // The zone decides, not the program: a multi-sampled instrument answers
     // differently at each end of the keyboard, which is the point of zones.
-    const Zone* zone = m_block_bank->zone_for(ch.program, pitch, velocity);
-    if (!zone) return;
-    const Sample* sample = m_block_bank->sample_of(*zone);
-    if (!sample || sample->data.empty()) return;
+    // Several may answer at once -- a preset that layers two instruments, or
+    // one instrument covering a key twice -- and all of them sound. On eight
+    // voices that is expensive, and it is meant to be: the alternative is
+    // playing the first and calling the result the instrument.
+    const Zone* matched[kVoices] = {};
+    const int count = m_block_bank->zones_for(ch.program, pitch, velocity, matched, kVoices);
 
-    Voice* slot = nullptr;
-    for (auto& v : m_voices) {
-        if (!v.active) { slot = &v; break; }
-    }
-    if (!slot) {
-        // Eight voices, and a ninth note has to take one. The oldest goes:
-        // stealing the newest would cut off what the listener just heard start.
-        slot = &m_voices[0];
+    for (int i = 0; i < count; ++i) {
+        const Zone* zone = matched[i];
+        const Sample* sample = m_block_bank->sample_of(*zone);
+        if (!sample || sample->data.empty()) continue;
+
+        Voice* slot = nullptr;
         for (auto& v : m_voices) {
-            if (v.started < slot->started) slot = &v;
+            if (!v.active) { slot = &v; break; }
         }
-    }
+        if (!slot) {
+            // Eight voices, and a ninth note has to take one. The oldest goes:
+            // stealing the newest would cut off what the listener just heard
+            // start -- which also protects the layers started just above, since
+            // they are the newest things in the box.
+            slot = &m_voices[0];
+            for (auto& v : m_voices) {
+                if (v.started < slot->started) slot = &v;
+            }
+        }
 
-    *slot = Voice{};
-    slot->active   = true;
-    slot->channel  = static_cast<uint8_t>(channel & 0x0F);
-    slot->pitch    = pitch;
-    slot->sample   = sample;
-    slot->zone     = zone;
-    // The bank, not just the sample: this is what stops a swap from pulling the
-    // audio out from under a note that is still sounding.
-    slot->holder   = m_block_bank;
-    slot->position = 0.0;
-    slot->rate     = rate_for(*sample, *zone, pitch, ch.bend);
-    slot->level    = static_cast<float>(velocity) / 127.0f;
-    slot->envelope = 0.0f;
-    slot->stage    = Stage::Attack;
-    slot->started  = ++m_age;
+        *slot = Voice{};
+        slot->active   = true;
+        slot->channel  = static_cast<uint8_t>(channel & 0x0F);
+        slot->pitch    = pitch;
+        slot->sample   = sample;
+        slot->zone     = zone;
+        // The bank, not just the sample: this is what stops a swap from pulling
+        // the audio out from under a note that is still sounding.
+        slot->holder   = m_block_bank;
+        slot->position = 0.0;
+        slot->rate     = rate_for(*sample, *zone, pitch, ch.bend);
+        slot->level    = static_cast<float>(velocity) / 127.0f * zone->gain;
+        slot->envelope = 0.0f;
+        slot->stage    = Stage::Attack;
+        slot->started  = ++m_age;
+    }
 }
 
 void Spc700Output::release_note(uint8_t channel, uint8_t pitch) {

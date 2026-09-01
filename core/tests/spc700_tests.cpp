@@ -60,6 +60,20 @@ std::shared_ptr<SampleBank> bank_with(Instrument instrument, int program = 0) {
     return bank;
 }
 
+/** One program whose zones all answer the same note, which is what a preset
+    that layers two instruments means. */
+std::shared_ptr<SampleBank> layered_bank(std::vector<Instrument> layers, int program = 0) {
+    auto bank = std::make_shared<SampleBank>();
+    for (auto& layer : layers) {
+        Zone zone = layer;
+        bank->samples.push_back(std::move(layer.audio));
+        zone.sample = static_cast<int>(bank->samples.size()) - 1;
+        bank->programs[static_cast<size_t>(program)].zones.push_back(zone);
+    }
+    bank->programs[static_cast<size_t>(program)].name = "Test";
+    return bank;
+}
+
 /** Renders one block and returns the loudest absolute sample in it. */
 float peak_of_block(Spc700Output& out, int frames, int64_t start_us = 0) {
     std::vector<float> buffer(static_cast<size_t>(frames) * 2, 0.0f);
@@ -619,4 +633,98 @@ TEST_CASE("a sustain rate of zero holds, which is what a SoundFont means") {
     const float early = peak_of_block(out, 256, 0);
     const float later = peak_of_block(out, 2048, 1'000'000);
     CHECK(later == doctest::Approx(early).epsilon(0.01));
+}
+
+// ── Layering ─────────────────────────────────────────────────────────────────
+
+TEST_CASE("a layered program starts a voice for each zone that answers") {
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(layered_bank({flat_sample(0.2f, kRate), flat_sample(0.2f, kRate)}));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    peak_of_block(out, 64);
+
+    // One note, two voices. Expensive on a chip with eight, and the alternative
+    // is playing one of the two and calling the result the instrument.
+    CHECK(out.active_voices() == 2);
+}
+
+TEST_CASE("two layers of one sample arrive at twice the level of one") {
+    Spc700Output single;
+    single.set_sample_rate(kRate);
+    single.set_bank(layered_bank({flat_sample(0.2f, kRate)}));
+    REQUIRE(single.start().has_value());
+    single.note_on(0, 60, 127, 0);
+    const float one = peak_of_block(single, 64);
+
+    Spc700Output doubled;
+    doubled.set_sample_rate(kRate);
+    doubled.set_bank(layered_bank({flat_sample(0.2f, kRate), flat_sample(0.2f, kRate)}));
+    REQUIRE(doubled.start().has_value());
+    doubled.note_on(0, 60, 127, 0);
+    const float two = peak_of_block(doubled, 64);
+
+    // Which is the whole reason a bank that layers on purpose states an
+    // attenuation to pay for it.
+    REQUIRE(one > 0.0f);
+    CHECK(two == doctest::Approx(one * 2.0f).epsilon(0.01));
+}
+
+TEST_CASE("the level a zone declares reaches the audio") {
+    Spc700Output loud;
+    loud.set_sample_rate(kRate);
+    loud.set_bank(bank_with(flat_sample(0.5f, kRate)));
+    REQUIRE(loud.start().has_value());
+    loud.note_on(0, 60, 127, 0);
+    const float full = peak_of_block(loud, 64);
+
+    Instrument attenuated = flat_sample(0.5f, kRate);
+    attenuated.gain = 0.5f;
+    Spc700Output quiet;
+    quiet.set_sample_rate(kRate);
+    quiet.set_bank(bank_with(attenuated));
+    REQUIRE(quiet.start().has_value());
+    quiet.note_on(0, 60, 127, 0);
+    const float halved = peak_of_block(quiet, 64);
+
+    REQUIRE(full > 0.0f);
+    CHECK(halved == doctest::Approx(full * 0.5f).epsilon(0.01));
+}
+
+TEST_CASE("layering cannot cost more voices than the chip has") {
+    std::vector<Instrument> many;
+    for (int i = 0; i < 9; ++i) many.push_back(flat_sample(0.1f, kRate));
+
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    out.set_bank(layered_bank(std::move(many)));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    peak_of_block(out, 64);
+
+    // Nine zones, eight voices. The ninth is dropped when the note is built
+    // rather than left to steal one of its own layers a moment later.
+    CHECK(out.active_voices() == 8);
+}
+
+TEST_CASE("a note off releases every voice its note started") {
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    Instrument held = flat_sample(0.2f, kRate);
+    held.loop_start = 0;
+    held.loop_end = kRate;
+    held.release = 0.01f;
+    out.set_bank(layered_bank({held, held}));
+    REQUIRE(out.start().has_value());
+
+    out.note_on(0, 60, 127, 0);
+    peak_of_block(out, 64);
+    REQUIRE(out.active_voices() == 2);
+
+    out.note_off(0, 60, 0);
+    peak_of_block(out, kRate / 10);   // well past a 10ms release
+    CHECK(out.active_voices() == 0);
 }
