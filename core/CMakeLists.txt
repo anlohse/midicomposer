@@ -247,6 +247,7 @@ if(MIDI_COMPOSER_BUILD_TESTS)
         tests/persistence_tests.cpp
         tests/playback_tests.cpp
         tests/preferences_tests.cpp
+        tests/real_bank_tests.cpp
         tests/sf2_tests.cpp
         tests/spc700_tests.cpp
         tests/spc_file_tests.cpp

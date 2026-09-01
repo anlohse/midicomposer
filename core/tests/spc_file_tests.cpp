@@ -284,8 +284,11 @@ TEST_CASE("an SPC with no samples anywhere is refused rather than returning noth
 TEST_CASE("no more than 128 samples are mapped") {
     SpcSpec spec;
     for (int i = 0; i < 200; ++i) {
-        // Spread far enough apart that the samples do not overlap.
-        spec.entries.push_back({static_cast<uint16_t>(0x1000 + i * 64), simple_sample(), 0});
+        // Spread far enough apart that the samples do not overlap, and each
+        // looping to its own start -- a loop outside the sample is now what
+        // marks an entry as stale rather than an instrument.
+        const auto start = static_cast<uint16_t>(0x1000 + i * 64);
+        spec.entries.push_back({start, simple_sample(), start});
     }
     const auto bank = io::parse_spc(build_spc(spec), "Rip");
     REQUIRE(bank.has_value());
@@ -325,4 +328,40 @@ TEST_CASE("a ripped bank renders without falling over") {
     // Reaching here at all is the assertion; every sample read has to have
     // stayed inside the data the rip produced.
     CHECK(out.dropped_events() == 0);
+}
+
+TEST_CASE("an entry whose loop points outside its own sample is stale") {
+    // The test that separates an instrument from a coincidence. A directory
+    // page holds 256 entries whether the game filled them or not, and stale
+    // ones point at memory that decodes by accident -- roughly ninety a file in
+    // a real rip. Their loop addresses give them away.
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(), 0x1000});          // real
+    spec.entries.push_back({0x1400, simple_sample(), 0xD785});          // miles away
+    spec.entries.push_back({0x1800, simple_sample(), 0x1000});          // before itself
+
+    const auto bank = io::parse_spc(build_spc(spec), "Rip");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->samples.size() == 1);
+}
+
+TEST_CASE("a loop that is not on a block boundary is stale") {
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(), 0x1000 + 9});      // block 1
+    spec.entries.push_back({0x1400, simple_sample(), 0x1400 + 5});      // mid-block
+
+    // BRR is nine bytes a block, so a loop five bytes in is not a loop.
+    const auto bank = io::parse_spc(build_spc(spec), "Rip");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->samples.size() == 1);
+}
+
+TEST_CASE("two entries pointing at one sample offer it once") {
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(), 0x1000});
+    spec.entries.push_back({0x1000, {}, 0x1000});     // the same sample, aliased
+
+    const auto bank = io::parse_spc(build_spc(spec), "Rip");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->samples.size() == 1);
 }
