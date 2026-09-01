@@ -304,3 +304,27 @@ TEST_CASE("the fader and pan reach the audio") {
     CHECK(centred > 0.0f);
     CHECK(silenced == doctest::Approx(0.0f));
 }
+
+TEST_CASE("the interpolation kernel does not change the level of a steady signal") {
+    // The gaussian's weights are normalised for exactly this: without it, a
+    // held note would wobble in volume as its fractional position drifted,
+    // which is audible as a slow tremolo nobody asked for.
+    Spc700Output out;
+    out.set_sample_rate(kRate);
+    Sample looped = flat_sample(1.0f, 1000);
+    looped.loop_start = 0;
+    looped.loop_end = 1000;
+    out.set_bank(bank_with(looped));
+    REQUIRE(out.start().has_value());
+
+    // A pitch that is not the root key, so the read position lands between
+    // frames rather than on them.
+    out.note_on(0, 67, 127, 0);
+    const float peak = peak_of_block(out, 256);
+
+    // Voice gain, the channel fader and the constant-power pan are the only
+    // things between the sample and the output; the kernel must contribute
+    // nothing of its own.
+    const float expected = 1.0f * 0.25f * (100.0f / 127.0f) * std::sqrt(0.5f);
+    CHECK(peak == doctest::Approx(expected).epsilon(0.02));
+}
