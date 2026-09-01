@@ -13,6 +13,33 @@
 namespace {
 
 /**
+ * What the webview is about to be created with.
+ *
+ * Creating it depends on more of the machine than any other step: a runtime
+ * installed outside this process, a data folder somewhere in the profile, and
+ * four environment variables that redirect all of it. When it fails on one
+ * machine and not another, this is the difference, and guessing at it from the
+ * outside costs a round trip each time.
+ */
+void log_webview_environment() {
+    for (const char* name : {"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
+                             "WEBVIEW2_USER_DATA_FOLDER",
+                             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                             "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
+                             "APPDATA", "TEMP"}) {
+        char* value = nullptr;
+        size_t size = 0;
+        if (_dupenv_s(&value, &size, name) == 0 && value) {
+            MC_LOG_INFO("  {} = {}", name, value);
+            std::free(value);
+        } else {
+            MC_LOG_INFO("  {} is not set", name);
+        }
+    }
+    MC_LOG_INFO("  WebView2 runtime = {}", midi_composer::shell::webview2_runtime_version());
+}
+
+/**
  * Reports a startup failure instead of vanishing.
  *
  * Everything below runs before there is a window, so anything that throws here
@@ -42,6 +69,7 @@ int main() {
     // fail on a machine rather than in the code: it needs the WebView2 runtime
     // present, and it needs its user data folder, which another instance --
     // including one whose parent has already died -- may still hold.
+    log_webview_environment();
     MC_LOG_INFO("Creating the webview");
     std::unique_ptr<saucer::smartview<>> view_holder;
     try {

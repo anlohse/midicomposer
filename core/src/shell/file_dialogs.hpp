@@ -29,6 +29,13 @@ std::wstring make_file_filter(const std::string& pattern);
 // is something to retype, a folder that opens is somewhere to drop a file.
 void reveal_folder(const std::string& utf8_path);
 
+// The Evergreen WebView2 runtime's version, or why it could not be found.
+//
+// Read from the registry rather than by asking the loader, so it can be logged
+// *before* the call that might not come back -- which is the whole point of
+// wanting to know it.
+std::string webview2_runtime_version();
+
 // Reports a failure that stops the app from starting. Startup errors happen
 // before there is a window to show them in, and a user who double-clicked the
 // executable would otherwise see nothing at all.
