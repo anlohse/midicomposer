@@ -132,6 +132,13 @@ ParameterValue Spc700Output::get_parameter(std::string_view name) const {
     return m_bank_path;
 }
 
+std::vector<std::string> Spc700Output::program_names() const {
+    const auto loaded = bank();
+    if (!loaded) return {};      // nothing loaded: leave the list alone
+    return std::vector<std::string>(loaded->program_names.begin(),
+                                    loaded->program_names.end());
+}
+
 base::Result<void> Spc700Output::set_parameter(std::string_view name,
                                                const ParameterValue& value) {
     if (name != "bank") {

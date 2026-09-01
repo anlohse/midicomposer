@@ -365,3 +365,41 @@ TEST_CASE("two entries pointing at one sample offer it once") {
     REQUIRE(bank.has_value());
     CHECK((*bank)->samples.size() == 1);
 }
+
+TEST_CASE("a ripped program is named after what was measured about it") {
+    // A rip has no names, so the label has to be built from what is known. It
+    // is what separates a percussion hit from a held instrument in a list of
+    // two dozen unknowns.
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(8), 0x1000});
+
+    const auto bank = io::parse_spc(build_spc(spec), "Rip");
+    REQUIRE(bank.has_value());
+    const auto& label = (*bank)->program_names[0];
+    CAPTURE(label);
+    CHECK(label.find("Sample 0") != std::string::npos);
+    CHECK(label.find("ms") != std::string::npos);      // 128 frames at 32kHz
+    CHECK(label.find("looped") != std::string::npos);
+}
+
+TEST_CASE("a sample too short to measure is not given a note in its name") {
+    // One block: sixteen frames, which cannot hold two cycles of anything the
+    // detector is allowed to look for, so it declines structurally rather than
+    // statistically. That distinction is why this test uses a short sample and
+    // not noise -- two earlier attempts used a square wave and then random
+    // nibbles, and the detector found a pitch in both. It was right to: a short
+    // square really is periodic, and short noise correlates by chance often
+    // enough at the deliberately low confidence floor this ripper uses. The
+    // synthetic tests in sample_pitch_tests.cpp are where "noise has no pitch"
+    // is properly established, with a second of it.
+    SpcSpec spec;
+    spec.entries.push_back({0x1000, simple_sample(1), 0x1000});
+
+    const auto bank = io::parse_spc(build_spc(spec), "Rip");
+    REQUIRE(bank.has_value());
+    const auto& label = (*bank)->program_names[0];
+    CAPTURE(label);
+    CHECK((*bank)->samples[0].root_key == 60);
+    CHECK((*bank)->samples[0].fine_tune_cents == 0.0);
+    CHECK(label.find("ms") != std::string::npos);
+}

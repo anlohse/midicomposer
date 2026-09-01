@@ -295,3 +295,14 @@ TEST_CASE("the bank is named after where it came from") {
     REQUIRE(bank.has_value());
     CHECK((*bank)->name == "Super Famicom Kit");
 }
+
+TEST_CASE("a program is named after its preset, not its sample") {
+    // A SoundFont calls the sample "Piano C4" and the preset "Grand Piano".
+    // The second is what somebody is choosing between.
+    const auto bank = io::parse_sf2(build_sf2({}), "Test");
+    REQUIRE(bank.has_value());
+    CHECK((*bank)->program_names[0] == "Test Preset");
+    CHECK((*bank)->samples[0].name == "Test Sample");
+    // And nothing is claimed for a program that has nothing behind it.
+    CHECK((*bank)->program_names[1].empty());
+}
