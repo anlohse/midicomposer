@@ -512,10 +512,13 @@ export class MidiEventsPanel extends LitElement {
     /**
      * What the instrument names came from, shown beside the picker.
      *
-     * Without this the list is 128 names with no provenance, and loading the
-     * wrong bank looks exactly like the application being wrong: instruments
-     * that should exist are missing, and the ones that remain sound like
-     * something else. That cost an afternoon once.
+     * The status bar has always named it, at the far corner of the window. That
+     * is not the same as saying it here: the list is 128 names, and the
+     * question "where are these from" is asked while looking at them, not while
+     * looking at the bottom edge. Loading the wrong bank reads exactly like the
+     * application being wrong -- instruments that should exist are missing, and
+     * the ones that remain sound like something else -- and it cost an
+     * afternoon once, with the answer on screen the whole time.
      */
     @state() private programSource = '';
 

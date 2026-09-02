@@ -47,7 +47,9 @@ Not required yet:
 
 * full professional engraving
 * slur semantics distinct from ties
-* tuplets
+* ~~tuplets~~ — triplets were added after this list was written: they have a
+  toolbar mode, a bracket, and they beam with their own group rather than with
+  the plain notes sharing their beat
 * grace notes
 * complex beaming rules across every edge case
 * full harmonic spelling engine
@@ -696,21 +698,56 @@ You can explicitly mark advanced polyphony layout as post-MVP.
 
 # 20. Chord Rendering Rules
 
-## 20.1 MVP stance
+## 20.1 Status
 
-Chord engraving is optional for first MVP, but the architecture should allow it.
+Implemented. Notes that
 
-## 20.2 Minimal support
+* start at the same tick
+* belong to the same track
+* share the same written value — the same note value, dot and triplet membership
 
-If two or more notes:
+are one chord: one stem, one set of flags, one place under a beam.
 
-* start at same tick
-* belong to same track
-* share the same local fragment duration
+The condition on the written value is the one that matters and the one this
+section originally named. Two notes that start together and last different
+lengths cannot share a stem without the stem stating a duration only one of them
+has; real engraving separates them into voices, which is §2.2's post-MVP
+territory. They stay as they were, each with its own stem.
 
-they may be grouped visually into one chord stack.
+## 20.2 Stem direction
 
-If not implemented yet, render them as separate note symbols with simple collision avoidance.
+One direction for the whole chord, decided by **the note furthest from the middle
+line** — that is the one whose stem would otherwise run off the staff. Counting
+heads instead would stem a chord upward because two of its three notes sit just
+below the middle, and send the stem off the top of the staff for the third.
+
+A chord balanced equally either side of the middle line stems down, which is the
+usual convention and keeps the stem clear of whatever is written above.
+
+Under a beam the chord follows the beam's direction rather than its own, and the
+beam's direction is the majority over every *note* in the group rather than over
+the chords — a three-note chord has more say in where the beam sits than a single
+note beside it, because it does.
+
+## 20.3 Seconds
+
+Two notes a diatonic second apart cannot sit on the same side of the stem: the
+noteheads would occupy the same space. One of them crosses to the far side,
+which is the shape a reader recognises as a second rather than as a smudge.
+
+Which one crosses depends on the direction. Read from the end the stem is
+anchored at — the bottom for an upward stem, the top for a downward one — and
+displace a note when it is a second from the previous one **and that one stayed
+in place**. The second condition is what makes a cluster alternate instead of
+pushing everything across: in three notes a step apart, the middle one moves and
+the outer two do not.
+
+## 20.4 Where the rules live
+
+In `ui/src/services/chordLayout.ts`, deliberately apart from the canvas: it is
+arithmetic on staff steps and needs no rendering context, so it is unit-tested
+while the drawing is verified by looking at it. The renderer keeps only the
+question of where to put the ink.
 
 ---
 
