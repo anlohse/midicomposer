@@ -150,10 +150,9 @@ int main() {
         //
         // A maximized window's size is the screen's, not the size to come back
         // to -- so while maximized only the flag is recorded and whatever was
-        // last measured un-maximized is kept. An earlier version of this stored
-        // the maximized size as the restore size, and it grew by the display's
-        // scale factor on every maximize-close-open cycle until the window was
-        // larger than the screen with the menu bar alone visible in a corner.
+        // last measured un-maximized is kept. Storing the maximized size here
+        // instead lost the size the window had before: un-maximizing after a
+        // restore landed on the whole screen rather than where it was left.
         const bool maximized = view.maximized();
         int width = app_context.core().preferences().window_width();
         int height = app_context.core().preferences().window_height();
@@ -201,14 +200,15 @@ int main() {
     // in the preferences, and clamped to a window that fits on this display --
     // a size remembered on a larger monitor, or on one no longer attached, must
     // not come back as a window bigger than the screen.
+    const bool restore_maximized = app_context.core().preferences().window_maximized();
     {
         const auto& prefs = app_context.core().preferences();
         auto [width, height] = midi_composer::shell::window_size_that_fits(
             prefs.window_width(), prefs.window_height(), 1280, 720);
         view.set_size(width, height);
-        // After the size, so un-maximizing later lands on the size above rather
+        // Maximizing is deliberately not done here -- see after show() below.
+        // The size is set now so that un-maximizing later lands on it rather
         // than on whatever the window happened to be first.
-        if (prefs.window_maximized()) view.set_maximized(true);
     }
 
     // Force a variable on window to confirm native context
@@ -244,6 +244,20 @@ int main() {
 
     MC_LOG_INFO("Showing the window");
     view.show();
+
+    // Maximized after showing, never before. A window maximized while still
+    // hidden comes up with nothing drawn in it: the frame and the title bar are
+    // there, and inside is whatever the screen held before, because the
+    // webview's child window is sized behind the shown window's back and no
+    // paint ever reaches it. Maximizing a window that is already visible
+    // resizes something that is already painting, so the content follows.
+    //
+    // This one hid from every check made through the webview -- a screenshot
+    // taken over the debugging protocol comes from the webview's own
+    // compositor, which was rendering the whole time. Only a capture of the
+    // screen shows it.
+    if (restore_maximized) view.set_maximized(true);
+
     view.run();
 
     // The webview is dead once run() returns; stop routing events to it

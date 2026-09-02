@@ -390,9 +390,9 @@ TEST_CASE("a maximized window's own size is never the size to come back to") {
     // The shell keeps the last un-maximized size while maximized, and this is
     // the shape that has to survive: a flag, and a size measured earlier.
     //
-    // Storing the maximized size instead grew the window by the display's
-    // scale factor on every maximize-close-open cycle, until it was larger
-    // than the screen with only the menu bar visible in a corner.
+    // Storing the maximized size instead lost the size the window had before
+    // it was maximized, so un-maximizing after a restore filled the screen
+    // rather than returning the window to where it was left.
     app::Preferences written;
     written.set_window(1008, 601, false);   // measured un-maximized
     written.set_window(1008, 601, true);    // then maximized, size unchanged

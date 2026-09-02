@@ -901,6 +901,59 @@ a packaging one, and nothing here needs to anticipate it.
 
 ---
 
+# 19. Window state, and why it hid from every check
+
+Remembering the window across runs is three lines of code and produced two
+defects, one of which was invisible to the way this project verifies itself.
+Both are worth writing down because the second changes how a UI claim can be
+believed at all.
+
+## 19.1 Maximize only a window that is already shown
+
+`set_maximized(true)` before `show()` brings the window up **with nothing drawn
+in it**. The frame is there, the title bar is there, and the inside holds
+whatever the screen happened to contain before — the previous application's
+pixels, never repainted. The webview's child window is sized behind the shown
+window's back and no paint reaches it.
+
+Maximizing after `show()` resizes something that is already painting, and the
+content follows. So the restore sequence is: set the size, show, then maximize.
+
+## 19.2 A screenshot over the debugging protocol cannot see this
+
+Every check this project makes on the UI runs through CDP into the webview, and
+`Page.captureScreenshot` renders from the **webview's own compositor**. That
+compositor was working the entire time. The screenshots came back perfect while
+the screen showed another program's leftovers.
+
+Reading `document.body.innerText` was worse than useless here for a second
+reason: the UI lives in a shadow root, which `innerText` does not cross, so an
+empty string means nothing either way.
+
+**A claim about what is on screen needs a capture of the screen.**
+`CopyFromScreen` over the window's rect, from a process that has called
+`SetProcessDPIAware` — without that call the capture is silently cropped to the
+top-left corner of a scaled window, which looks like a layout bug and is not.
+
+## 19.3 What is stored, and in which pixels
+
+A maximized window's own size is the screen's, not the size to come back to, so
+while maximized only the flag is recorded and the last un-maximized size is
+kept. Storing the maximized size lost the earlier one: un-maximizing after a
+restore filled the screen instead of returning the window to where it was left.
+
+Sizes are **physical pixels** throughout — `size()`, `set_size()`, and
+`SPI_GETWORKAREA` read from this process, which is per-monitor DPI aware. They
+are consistent with each other, and inconsistent with anything measured in CSS
+pixels inside the webview or from a DPI-unaware process, where the same window
+reads 1/scale as large. Mixing the two is what made a correctly restored window
+look oversized, and there was never any growth across runs.
+
+The restore is still clamped to the work area, for the case a size outlives the
+monitor it was measured on.
+
+---
+
 # 17. Optional Cross-Phase Milestones
 
 These are helpful checkpoints across the roadmap.
