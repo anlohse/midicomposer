@@ -492,6 +492,37 @@ base::Result<base::CompositionId> CoreFacade::import_midi(const std::string& pat
     return id;
 }
 
+bool CoreFacade::has_unsaved_changes(base::CompositionId id) const {
+    std::lock_guard lock(m_doc_mutex);
+    // Through documents() rather than get_document(), which is not const: this
+    // reports and never touches.
+    const auto& all = m_document_manager.documents();
+    const auto found = all.find(id);
+    return found != all.end() && found->second && found->second->dirty();
+}
+
+std::vector<base::CompositionId> CoreFacade::unsaved_documents() const {
+    std::lock_guard lock(m_doc_mutex);
+    std::vector<base::CompositionId> out;
+    for (const auto& [id, doc] : m_document_manager.documents()) {
+        if (doc && doc->dirty()) out.push_back(id);
+    }
+    // Sorted, so the question names them in the order the tabs were opened
+    // rather than in whatever order the hash map happens to hold.
+    std::sort(out.begin(), out.end(),
+              [](base::CompositionId a, base::CompositionId b) { return a.value() < b.value(); });
+    return out;
+}
+
+std::string CoreFacade::document_title(base::CompositionId id) const {
+    std::lock_guard lock(m_doc_mutex);
+    const auto& all = m_document_manager.documents();
+    const auto found = all.find(id);
+    if (found == all.end() || !found->second) return "Untitled";
+    const std::string title(found->second->composition().title());
+    return title.empty() ? "Untitled" : title;
+}
+
 std::string CoreFacade::get_project_path(base::CompositionId id) const {
     std::lock_guard lock(m_doc_mutex);
     auto* doc = const_cast<DocumentManager&>(m_document_manager).get_document(id);

@@ -41,4 +41,18 @@ std::string webview2_runtime_version();
 // executable would otherwise see nothing at all.
 void show_error_dialog(const std::string& title, const std::string& message);
 
+/** What to do about work that has not been written to disk. */
+enum class UnsavedChoice { Save, Discard, Cancel };
+
+/**
+ * Asks whether to save `what` before it is closed.
+ *
+ * Three answers rather than two, because the useful one is "save it": offering
+ * only "lose it" or "stay here" makes the dialog an obstacle instead of an
+ * answer. Native, and synchronous -- it is asked while the window is being
+ * taken away, which is the worst moment to depend on the webview still being
+ * there to draw a dialog of our own.
+ */
+[[nodiscard]] UnsavedChoice ask_unsaved_changes(const std::string& what);
+
 } // namespace midi_composer::shell

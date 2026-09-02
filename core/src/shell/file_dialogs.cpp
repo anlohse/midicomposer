@@ -176,6 +176,31 @@ void show_error_dialog(const std::string& title, const std::string& message) {
                 MB_OK | MB_ICONERROR);
 }
 
+
+UnsavedChoice ask_unsaved_changes(const std::string& what) {
+#ifdef _WIN32
+    const std::string message =
+        "\"" + what + "\" has changes that have not been saved.\n\n"
+        "Save them before closing?";
+    const auto wide = [](const std::string& text) {
+        std::wstring out(text.size() + 1, L'\0');
+        const int written = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1,
+                                                out.data(), static_cast<int>(out.size()));
+        out.resize(written > 0 ? written - 1 : 0);
+        return out;
+    };
+    const int answer = MessageBoxW(nullptr, wide(message).c_str(), L"MIDI Composer",
+                                   MB_YESNOCANCEL | MB_ICONWARNING | MB_TASKMODAL);
+    if (answer == IDYES) return UnsavedChoice::Save;
+    if (answer == IDNO)  return UnsavedChoice::Discard;
+    return UnsavedChoice::Cancel;
+#else
+    (void)what;
+    // Nowhere to ask, so the safe answer: nothing is discarded.
+    return UnsavedChoice::Cancel;
+#endif
+}
+
 } // namespace midi_composer::shell
 
 #else

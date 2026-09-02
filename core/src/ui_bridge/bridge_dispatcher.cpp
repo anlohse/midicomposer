@@ -1,6 +1,7 @@
 #include "bridge_dispatcher.hpp"
 #include "base/logger.hpp"
 #include "shell/file_dialogs.hpp"
+#include "shell/unsaved_changes.hpp"
 #include "playback/output_plugin.hpp"
 #include "app/preferences.hpp"
 
@@ -90,6 +91,22 @@ int16_t checked_bend(const nlohmann::json& payload, const char* field) {
     return static_cast<int16_t>(value);
 }
 
+/**
+ * The document a command is about, under either of its two names.
+ *
+ * Two names for one field grew up in this file: the document-lifecycle commands
+ * took `id` and the editing commands took `documentId` -- and `export_midi` and
+ * `export_audio`, which are siblings, ended up on opposite sides of that
+ * accident. Reading both costs nothing and stops the next person losing an hour
+ * to a key name, which is how this was found.
+ */
+base::CompositionId document_id(const nlohmann::json& payload) {
+    if (payload.contains("documentId")) {
+        return base::CompositionId{payload.at("documentId").get<uint64_t>()};
+    }
+    return base::CompositionId{payload.at("id").get<uint64_t>()};
+}
+
 uint8_t checked_u8(const nlohmann::json& payload, const char* field, int min, int max) {
     const int value = payload.at(field).get<int>();
     if (value < min || value > max) {
@@ -117,10 +134,17 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto id = m_core.new_project();
             response["result"] = {{"id", id.value()}};
         } else if (type == "close_project") {
-            base::CompositionId id{payload.at("id").get<uint64_t>()};
+            const auto id = document_id(payload);
+            // Asked before anything is dropped. Cancelling comes back the same
+            // way a cancelled file dialog does, so the UI just refreshes and
+            // finds the document still there.
+            if (!shell::resolve_unsaved(m_core, id)) {
+                response["result"] = {{"cancelled", true}};
+                return response;
+            }
             response["result"] = m_core.close_project(id);
         } else if (type == "get_document_snapshot") {
-            base::CompositionId id{payload.at("id").get<uint64_t>()};
+            const auto id = document_id(payload);
             response["result"] = m_core.get_document_snapshot(id);
         } else if (type == "get_open_documents") {
             auto docs = m_core.get_open_documents();
@@ -128,10 +152,10 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             for (auto id : docs) arr.push_back(id.value());
             response["result"] = arr;
         } else if (type == "set_active_document") {
-            base::CompositionId id{payload.at("id").get<uint64_t>()};
+            const auto id = document_id(payload);
             m_core.set_active_document(id);
         } else if (type == "create_note") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.create_note(doc_id, track_id,
                 payload.at("tick").get<int64_t>(),
@@ -141,25 +165,25 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             if (res) response["result"] = {{"id", res->value()}};
             else { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "delete_note") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::NoteId note_id{payload.at("noteId").get<uint64_t>()};
             auto res = m_core.delete_note(doc_id, track_id, note_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "move_note") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::NoteId note_id{payload.at("noteId").get<uint64_t>()};
             auto res = m_core.move_note(doc_id, track_id, note_id, payload.at("tick").get<int64_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "resize_note") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::NoteId note_id{payload.at("noteId").get<uint64_t>()};
             auto res = m_core.resize_note(doc_id, track_id, note_id, payload.at("duration").get<int64_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "update_note") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::NoteId note_id{payload.at("noteId").get<uint64_t>()};
             std::optional<uint8_t> pitch, velocity;
@@ -168,7 +192,7 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto res = m_core.update_note(doc_id, track_id, note_id, pitch, velocity);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "create_controller_event") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.create_controller_event(
                 doc_id, track_id, payload.at("tick").get<int64_t>(),
@@ -176,7 +200,7 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             if (res) response["result"] = {{"id", res->value()}};
             else { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "update_controller_event") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::EventId event_id{payload.at("eventId").get<uint64_t>()};
             std::optional<int64_t> tick;
@@ -187,20 +211,20 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto res = m_core.update_controller_event(doc_id, track_id, event_id, tick, controller, value);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "delete_controller_event") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::EventId event_id{payload.at("eventId").get<uint64_t>()};
             auto res = m_core.delete_controller_event(doc_id, track_id, event_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "create_pitch_bend") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.create_pitch_bend(doc_id, track_id, payload.at("tick").get<int64_t>(),
                                                 checked_bend(payload, "value"));
             if (res) response["result"] = {{"id", res->value()}};
             else { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "update_pitch_bend") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::EventId event_id{payload.at("eventId").get<uint64_t>()};
             std::optional<int64_t> tick;
@@ -210,13 +234,13 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto res = m_core.update_pitch_bend(doc_id, track_id, event_id, tick, value);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "delete_pitch_bend") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             base::EventId event_id{payload.at("eventId").get<uint64_t>()};
             auto res = m_core.delete_pitch_bend(doc_id, track_id, event_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "batch_edit") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             std::vector<edit::BatchOperation> ops;
             for (const auto& j : payload.at("operations")) {
                 edit::BatchOperation op;
@@ -256,34 +280,34 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
                 response["result"] = {{"createdNoteIds", ids}};
             } else { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "undo") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.undo(doc_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "redo") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.redo(doc_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "create_track") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.create_track(doc_id, payload.value("name", std::string{}));
             if (res) response["result"] = {{"id", res->value()}};
             else { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "rename_track") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.rename_track(doc_id, track_id, payload.at("name").get<std::string>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "delete_track") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.delete_track(doc_id, track_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_tempo") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.set_tempo(doc_id, payload.at("bpm").get<double>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "save_project" || type == "save_project_as") {
-            base::CompositionId id{payload.at("id").get<uint64_t>()};
+            const auto id = document_id(payload);
             // Explicit path (automation) > remembered path (plain save) > dialog.
             std::string path = payload.value("path", std::string{});
             if (path.empty() && type == "save_project") path = m_core.get_project_path(id);
@@ -306,7 +330,7 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             if (res) response["result"] = {{"id", res->value()}};
             else { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "export_midi") {
-            base::CompositionId id{payload.at("id").get<uint64_t>()};
+            const auto id = document_id(payload);
             std::string path = payload.value("path", std::string{});
             if (path.empty()) {
                 auto chosen = shell::save_file_dialog(kMidiFilter, L"mid");
@@ -332,59 +356,59 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
                 {"tick", m_core.playback_engine().current_tick().value()},
             };
         } else if (type == "set_track_volume") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_volume(doc_id, track_id, checked_u8(payload, "volume", 0, 127));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_master_volume") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.set_master_volume(doc_id, checked_u8(payload, "volume", 0, 127));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_pan") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_pan(doc_id, track_id, checked_u8(payload, "pan", 0, 127));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_mute") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_mute(doc_id, track_id, payload.at("muted").get<bool>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_solo") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_solo(doc_id, track_id, payload.at("solo").get<bool>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_arm") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_arm(doc_id, track_id, payload.at("armed").get<bool>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_channel") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_channel(doc_id, track_id, payload.at("channel").get<uint8_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_time_signature") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.set_time_signature(doc_id, payload.value("tick", int64_t{0}),
                                                  checked_u8(payload, "numerator", 1, 32),
                                                  checked_u8(payload, "denominator", 1, 32));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_key_signature") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             const auto tick = payload.value("tick", int64_t{0});
             const auto fifths = static_cast<int8_t>(payload.at("fifths").get<int>());
             auto res = m_core.set_key_signature(doc_id, tick, fifths, payload.value("minor", false));
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_clef") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             const auto clef = music::clef_from_string(payload.at("clef").get<std::string>());
             auto res = m_core.set_track_clef(doc_id, track_id, clef);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_track_program") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_program(doc_id, track_id, payload.at("program").get<uint8_t>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
@@ -392,7 +416,7 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             // Hearing an instrument without committing to it. The document id
             // is asked for even though nothing is edited: it is how the facade
             // finds a channel no track is using.
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             const auto value = [&payload](const char* key, uint8_t fallback) {
                 return payload.contains(key) ? payload.at(key).get<uint8_t>() : fallback;
             };
@@ -477,7 +501,7 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             info["parameters"] = params;
             response["result"] = info;
         } else if (type == "set_track_output") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             base::TrackId track_id{payload.at("trackId").get<uint64_t>()};
             auto res = m_core.set_track_output(doc_id, track_id,
                                                payload.value("outputId", std::string{}));
@@ -486,7 +510,7 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             auto res = m_core.select_output(payload.at("id").get<std::string>());
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "export_audio") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             std::string path = payload.value("path", std::string{});
             if (path.empty()) {
                 auto chosen = shell::save_file_dialog(kAudioFilter, L"wav");
@@ -567,11 +591,11 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
         } else if (type == "is_midi_input_open") {
             response["result"] = m_core.midi_service().is_input_open();
         } else if (type == "play") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.play(doc_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "record") {
-            base::CompositionId doc_id{payload.at("documentId").get<uint64_t>()};
+            const auto doc_id = document_id(payload);
             auto res = m_core.record(doc_id);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "stop") {

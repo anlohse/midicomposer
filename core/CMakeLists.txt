@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(MIDIComposer
-    VERSION 0.2.0
+    VERSION 0.3.0
     LANGUAGES CXX
 )
 
@@ -115,6 +115,8 @@ target_sources(midi_composer_core
         src/shell/crash_report.cpp
         src/shell/file_dialogs.hpp
         src/shell/file_dialogs.cpp
+        src/shell/unsaved_changes.hpp
+        src/shell/unsaved_changes.cpp
         src/shell/ui_bundle.hpp
         src/shell/ui_bundle.cpp
         src/ui_bridge/bridge_dispatcher.hpp
