@@ -45,13 +45,32 @@ public:
 
         auto logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
         spdlog::set_default_logger(logger);
-        spdlog::set_level(spdlog::level::debug);
+        // Debug is compiled in (see SPDLOG_ACTIVE_LEVEL in CMakeLists) but off
+        // unless asked for: at debug every message crossing the bridge is
+        // written, which is what you want when chasing something and noise the
+        // rest of the time. MC_LOG_LEVEL=debug turns it on for a run.
+        spdlog::set_level(verbose_wanted() ? spdlog::level::debug : spdlog::level::info);
         // Flushed on every line, not just on warnings. The file exists for the
         // case where somebody says "it will not start" -- and a startup that
         // ends badly ends before any buffer is written, so a buffered log of a
         // failed launch is an empty file. This is not a hot path.
         spdlog::flush_on(spdlog::level::debug);
         spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v");
+    }
+
+    /** Whether this run was asked for debug-level logging. */
+    static bool verbose_wanted() {
+#ifdef _WIN32
+        char* value = nullptr;
+        size_t size = 0;
+        if (_dupenv_s(&value, &size, "MC_LOG_LEVEL") != 0 || !value) return false;
+        const bool debug = std::string(value) == "debug";
+        std::free(value);
+        return debug;
+#else
+        const char* value = std::getenv("MC_LOG_LEVEL");
+        return value && std::string(value) == "debug";
+#endif
     }
 
     /** Where the file sink writes. Beside the plugins rather than the

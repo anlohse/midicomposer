@@ -461,6 +461,14 @@ base::Result<base::CompositionId> CoreFacade::open_project(const std::string& pa
     if (!comp) return std::unexpected(comp.error());
     comp->set_title(title_from_path(path));
     auto id = m_document_manager.adopt(std::move(*comp), path);
+
+    // Per-track routing comes from the document, so a project that has just
+    // arrived has to say where its channels go. Without this the routes are
+    // whatever the last document left behind -- and a track would play through
+    // another project's plugin, which looks like the instrument being wrong
+    // rather than the routing.
+    if (auto* doc = m_document_manager.get_document(id)) refresh_routes(*doc);
+
     MC_LOG_INFO("Opened project {} as document {}", path, id.value());
     return id;
 }
