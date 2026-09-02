@@ -207,6 +207,9 @@ TEST_CASE("nothing is rendered before the transport starts") {
 // exists for. Point CLAP_PATH at a folder to run it for real.
 
 #include "playback/clap_library.hpp"
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 TEST_CASE("a real .clap loads, describes itself and plays") {
     const auto files = playback::ClapLibrary::find_plugin_files();
@@ -347,4 +350,66 @@ TEST_CASE("a hosted plugin offers numbers, because it has no names to offer") {
     CHECK(programs.front().program == 0);
     CHECK(programs.back().program == 127);
     for (const auto& program : programs) CHECK(program.name.empty());
+}
+
+// ── Finding plugins ──────────────────────────────────────────────────────────
+//
+// Untested until a packaging experiment made the plugin folder stop working and
+// the log had nothing to say about it: every error was dropped, so a folder
+// that could not be read looked exactly like a folder with nothing in it.
+// These cover what the search does with the shapes a real machine offers.
+
+TEST_CASE("a folder that is not there yields nothing rather than throwing") {
+    const auto missing = (std::filesystem::temp_directory_path() /
+                          "midi-composer-no-such-folder-9f3a").string();
+    // Most machines have no CLAP_PATH and no Common Files\CLAP either, so this
+    // is the ordinary case and has to be quiet.
+    CHECK(playback::ClapLibrary::find_plugin_files({missing}).empty());
+}
+
+TEST_CASE("a path that is a file rather than a folder is skipped") {
+    const auto file = std::filesystem::temp_directory_path() / "midi-composer-not-a-folder.txt";
+    std::ofstream(file) << "not a directory";
+    CHECK(playback::ClapLibrary::find_plugin_files({file.string()}).empty());
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST_CASE("a .clap in the folder is found, and anything else is not") {
+    const auto root = std::filesystem::temp_directory_path() / "midi-composer-plugin-scan";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "Nested", ec);
+
+    std::ofstream(root / "Instrument.clap") << "x";
+    std::ofstream(root / "readme.txt") << "x";
+    std::ofstream(root / "Effect.dll") << "x";
+    // Plugins are sometimes a folder with the library inside, so the search is
+    // recursive and this one has to come back too.
+    std::ofstream(root / "Nested" / "Deeper.clap") << "x";
+
+    const auto found = playback::ClapLibrary::find_plugin_files({root.string()});
+    CHECK(found.size() == 2);
+    const auto has = [&found](const std::string& needle) {
+        return std::any_of(found.begin(), found.end(), [&needle](const std::string& path) {
+            return path.find(needle) != std::string::npos;
+        });
+    };
+    CHECK(has("Instrument.clap"));
+    CHECK(has("Deeper.clap"));
+    CHECK_FALSE(has("readme.txt"));
+    CHECK_FALSE(has("Effect.dll"));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("an empty folder and a missing one are both simply empty") {
+    // They are indistinguishable in the result, which is fine -- what was not
+    // fine is that an *unreadable* folder was indistinguishable from them too,
+    // and only the log can tell those apart.
+    const auto root = std::filesystem::temp_directory_path() / "midi-composer-empty-scan";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    CHECK(playback::ClapLibrary::find_plugin_files({root.string()}).empty());
+    std::filesystem::remove_all(root, ec);
 }

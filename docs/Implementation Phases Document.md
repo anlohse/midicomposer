@@ -850,12 +850,54 @@ Not a packaging checkbox. Three parts of the design touch it:
   person finds their own files — and the crash log is only useful if it can be
   found.
 
-## 18.4 Order of work
+## 18.4 MSIX was tried and is not the route
 
-Signing the existing installer is the smaller change and does not disturb the
-plugin story, so it is the first thing to price. The Store MSIX route is the
-better end state if the plugin folder question resolves, and the answer to that
-is a decision about what the application is rather than about packaging.
+Packaged and run on 2026-09-02, so this is measured rather than argued.
+
+**It packages.** An 841 KB MSIX, manifest valid, signs cleanly. Installing it
+needed the certificate trusted in a machine store or Developer Mode, both of
+which want elevation; Developer Mode plus a loose-file registration got it
+running without signing anything.
+
+**Two things broke.** With the same binary, the same folder and the same
+preferences file:
+
+| | CLAP plugin | metronome preference |
+|---|---|---|
+| run directly | `Plugin available: JC303` | Internal Synth, as the file says |
+| packaged | nothing at all | fell back to System MIDI |
+
+**And the reasons given for expecting trouble were wrong.** The packaged log
+prints `APPDATA = C:\Users\...\AppData\Roaming` and its webview profile under
+the real `%LOCALAPPDATA%`, and its log file was written to the real path. Nothing
+was redirected, and a full-trust packaged process is not barred from loading
+code from outside its package. The application looked in the right folder and
+did not find a plugin that was sitting in it. **The precise mechanism was not
+established**, and that is the honest state of it.
+
+What made it hard to see is a defect of ours, now fixed: plugin discovery
+dropped every `error_code` it collected, so a folder it could not read was
+indistinguishable from a folder with nothing in it. See `find_plugin_files` in
+`playback/clap_library.cpp` — and note the trap inside the fix, which is that
+`skip_permission_denied` turns a denial into a non-event, so the root has to be
+probed strictly and the recursion left lenient.
+
+**So the decision is: not MSIX.** Not because it cannot be done, but because it
+costs a restricted capability under Store review, visual assets that do not
+exist, the WebView2 bootstrap re-expressed as a dependency, and the plugin
+folder silently ceasing to work for a reason an afternoon of measurement could
+not name. Signing the existing NSIS installer removes the SmartScreen warning
+and touches none of that.
+
+## 18.5 Order of work
+
+Sign the existing installer. It is the smaller change, it disturbs nothing, and
+it is the whole of the problem.
+
+A Store version, if it ever happens, is a **different application** rather than
+this one repackaged — the project owner's shape for it is a simpler composer,
+still hybrid, but built on the Windows webview. That is a product decision, not
+a packaging one, and nothing here needs to anticipate it.
 
 ---
 

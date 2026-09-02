@@ -181,15 +181,68 @@ std::vector<std::string> ClapLibrary::find_plugin_files(const std::vector<std::s
     for (const auto& dir : search_paths(extra)) {
         std::error_code ec;
         const auto root = to_path(dir);
-        if (!std::filesystem::is_directory(root, ec)) continue;
-        // Recursive: plugins are sometimes a folder with the library inside.
-        for (auto it = std::filesystem::recursive_directory_iterator(
-                 root, std::filesystem::directory_options::skip_permission_denied, ec);
-             it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-            if (ec) break;
-            if (!it->is_regular_file(ec)) continue;
-            if (it->path().extension() == ".clap") files.push_back(from_path(it->path()));
+
+        // A folder that is not there is the normal case: most machines have no
+        // CLAP_PATH and no Common Files\CLAP, and saying so every launch would
+        // be noise.
+        if (!std::filesystem::exists(root, ec) || ec) {
+            if (ec) MC_LOG_WARN("Cannot look at the plugin folder {}: {}", dir, ec.message());
+            continue;
         }
+        if (!std::filesystem::is_directory(root, ec) || ec) {
+            if (ec) MC_LOG_WARN("Cannot look at the plugin folder {}: {}", dir, ec.message());
+            continue;
+        }
+
+        // A folder that is there and cannot be read is a different thing, and
+        // it used to look identical: every error_code below was dropped on the
+        // floor, so an unreadable folder and an empty one produced the same
+        // empty list and the same silence. That is how a plugin folder can
+        // stop working with nothing anywhere saying so -- found while packaging
+        // this application as MSIX, where exactly that happened and the log had
+        // nothing to offer.
+        // Listed once without skip_permission_denied, purely to find out
+        // whether it can be listed at all.
+        //
+        // That flag is what made the first version of this check useless: it
+        // turns a denial into a non-event, so `ec` stays clear and an
+        // unreadable folder still comes back as an empty one. Which is right
+        // for a *sub*folder somebody else owns, and wrong for the folder the
+        // application told the user to paste plugins into. So the root is
+        // probed strictly and the recursion below stays lenient.
+        std::filesystem::directory_iterator probe(root, ec);
+        if (ec) {
+            MC_LOG_WARN("The plugin folder {} cannot be read, so nothing in it "
+                        "will be found: {}", dir, ec.message());
+            continue;
+        }
+
+        auto it = std::filesystem::recursive_directory_iterator(
+            root, std::filesystem::directory_options::skip_permission_denied, ec);
+        if (ec) {
+            MC_LOG_WARN("Cannot walk the plugin folder {}: {}", dir, ec.message());
+            continue;
+        }
+
+        size_t found = 0;
+        // Recursive: plugins are sometimes a folder with the library inside.
+        for (; it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) {
+                // Stopped part way, so what was found is a partial answer and
+                // the person deserves to know which folder gave up.
+                MC_LOG_WARN("Stopped reading the plugin folder {} after {} plugins: {}",
+                            dir, found, ec.message());
+                break;
+            }
+            // One unreadable entry is not worth a line of its own; the folder
+            // failing is.
+            if (!it->is_regular_file(ec) || ec) continue;
+            if (it->path().extension() == ".clap") {
+                files.push_back(from_path(it->path()));
+                ++found;
+            }
+        }
+        MC_LOG_DEBUG("Plugin folder {}: {} found", dir, found);
     }
     return files;
 }
