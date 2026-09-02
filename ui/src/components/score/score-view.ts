@@ -3,6 +3,7 @@ import { customElement, property, state, query } from 'lit/decorators.js';
 import { DocumentSnapshot } from '../../models/document';
 import { NotationService, NotationValue, NoteFragment, MeasureLayout,
          RestFragment } from '../../services/notationService';
+import { groupChords, layoutChord } from '../../services/chordLayout';
 import { CoreBridge } from '../../bridge/coreBridge';
 import { pitchName } from '../../models/pitch';
 import { ClefDef, clefDef, middleLineStep, STEP_PX } from '../../models/clef';
@@ -799,16 +800,28 @@ export class ScoreView extends LitElement {
 
     // ─── Beam grouping ────────────────────────────────────────────────────────
 
-    private buildBeamGroups(sorted: NoteFragment[], vm: MeasureVisualLayout): Array<NoteFragment | NoteFragment[]> {
+    /** Whether a note is under the pointer right now, either kind of drag. */
+    private isDragged(f: NoteFragment): boolean {
+        return (this.drag?.kind === 'move' && this.drag.started &&
+                this.selection.has(noteKey(f.noteId))) ||
+               (this.drag?.kind === 'resize' && this.drag.noteId === f.noteId);
+    }
+
+    private buildBeamGroups(
+        sorted: NoteFragment[],
+        vm: MeasureVisualLayout,
+        chordOf?: Map<NoteFragment, NoteFragment[]>,
+    ): Array<NoteFragment | NoteFragment[]> {
         const ppqn      = this.doc?.ppqn ?? 480;
         const beatTicks = Math.max(1, Math.floor(ppqn * 4 / vm.timeSignature.denominator));
         const singles: NoteFragment[]            = [];
         const byBeat   = new Map<string, NoteFragment[]>();
 
         for (const f of sorted) {
-            const isDragged =
-                (this.drag?.kind === 'move' && this.drag.started && this.selection.has(noteKey(f.noteId))) ||
-                (this.drag?.kind === 'resize' && this.drag.noteId === f.noteId);
+            // Any note of a chord being dragged takes the whole chord out of
+            // the beam: it is about to be somewhere else, and beaming it where
+            // it no longer is would draw a bar to an empty space.
+            const isDragged = (chordOf?.get(f) ?? [f]).some(member => this.isDragged(member));
             if (isDragged || this.noteInfoFor(f.noteValue, f.dotted).flags === 0) {
                 singles.push(f);
                 continue;
@@ -1851,9 +1864,18 @@ export class ScoreView extends LitElement {
         // ── Notes ─────────────────────────────────────────────────────────────
         ctx.textBaseline = 'alphabetic';
         const sorted = [...vm.fragments].sort((a, b) => a.startTick - b.startTick);
-        for (const item of this.buildBeamGroups(sorted, vm)) {
-            if (Array.isArray(item)) this.renderBeamGroup(ctx, item, yBase, vm, clef);
-            else                     this.renderNote(ctx, item, yBase, false, vm, clef);
+
+        // Notes that begin together are one chord with one stem, so everything
+        // below works on chords and reaches the individual notes through this
+        // map. A chord is addressed by its first note, which is what the beam
+        // grouper sees -- beaming is about onsets, and a chord has one.
+        const chords = groupChords(sorted);
+        const chordOf = new Map<NoteFragment, NoteFragment[]>();
+        for (const group of chords) chordOf.set(group[0], group);
+
+        for (const item of this.buildBeamGroups(chords.map(g => g[0]), vm, chordOf)) {
+            if (Array.isArray(item)) this.renderBeamGroup(ctx, item, yBase, vm, clef, chordOf);
+            else                     this.renderNote(ctx, item, yBase, false, vm, clef, chordOf);
         }
 
         // ── Rests ─────────────────────────────────────────────────────────────
@@ -2064,6 +2086,113 @@ export class ScoreView extends LitElement {
         return Math.round(semitones * 7 / 12);
     }
 
+
+    // ─── Chords ───────────────────────────────────────────────────────────────
+    //
+    // Notes that begin together share one stem. Two of them a diatonic second
+    // apart cannot share a side of it -- the noteheads would occupy the same
+    // space -- so one crosses over, which is the shape a reader recognises as a
+    // second. Which one crosses depends on the stem's direction, so the
+    // arithmetic lives in services/chordLayout.ts where it can be tested; what
+    // is left here is where to put the ink.
+
+    /**
+     * Draws the noteheads of a chord and reports what the stem needs.
+     *
+     * `stemDown` is given rather than decided, because a chord under a beam
+     * follows the beam's direction rather than its own.
+     */
+    private drawChordHeads(
+        ctx: CanvasRenderingContext2D,
+        group: NoteFragment[],
+        yBase: number,
+        vm: MeasureVisualLayout,
+        clef: ClefDef,
+        stemDown: boolean,
+    ): { stemX: number; nearY: number; farY: number; allSelected: boolean } {
+        const x = this.noteX(group[0].startTick, vm);
+        const info = this.noteInfoFor(group[0].noteValue, group[0].dotted);
+        const { placements, lowestStep, highestStep } =
+            layoutChord(group.map(f => f.step), middleLineStep(clef), stemDown);
+
+        // Up: the stem is on the right of the heads. Down: on the left. A
+        // displaced head sits on the other side of that line, a notehead's
+        // width away.
+        const stemX = stemDown ? x : x + 12;
+        const crossed = stemDown ? -12 : 12;
+
+        let allSelected = true;
+        for (let i = 0; i < group.length; ++i) {
+            const f = group[i];
+            const hx = x + (placements[i].displaced ? crossed : 0);
+            const y = this.stepY(f.step, yBase, clef);
+            const selected = this.selection.has(noteKey(f.noteId));
+            if (!selected) allSelected = false;
+            const color = selected ? '#4da6ff' : '#fff';
+
+            this.drawLedgerLines(ctx, hx, y, yBase);
+            if (f.accidental) this.drawAccidental(ctx, hx, y, color, f.accidental);
+
+            ctx.fillStyle = ctx.strokeStyle = color;
+            ctx.beginPath();
+            ctx.ellipse(hx + 6, y, 6, 4.5, -20 * Math.PI / 180, 0, 2 * Math.PI);
+            if (info.hollow) { ctx.lineWidth = 2; ctx.stroke(); }
+            else             { ctx.fill(); }
+
+            if (info.dotted) {
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(hx + 16, y - 3, 2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Per note: a chord can be tied to another chord one note at a time.
+            if (f.tieStart) this.drawTie(ctx, hx, this.tieTargetX(f, vm), y);
+        }
+
+        // The stem is anchored at the head nearest its direction and has to
+        // reach past the one furthest away.
+        return {
+            stemX,
+            nearY: this.stepY(stemDown ? highestStep : lowestStep, yBase, clef),
+            farY:  this.stepY(stemDown ? lowestStep : highestStep, yBase, clef),
+            allSelected,
+        };
+    }
+
+    /** A chord on its own: its heads, one stem, and one set of flags. */
+    private renderChord(
+        ctx: CanvasRenderingContext2D,
+        group: NoteFragment[],
+        yBase: number,
+        beamed: boolean,
+        vm: MeasureVisualLayout,
+        clef: ClefDef,
+    ) {
+        const info = this.noteInfoFor(group[0].noteValue, group[0].dotted);
+        const { stemDown } = layoutChord(group.map(f => f.step), middleLineStep(clef));
+        const { stemX, nearY, farY, allSelected } =
+            this.drawChordHeads(ctx, group, yBase, vm, clef, stemDown);
+
+        if (!info.hasStem || beamed) return;
+
+        const color = allSelected ? '#4da6ff' : '#fff';
+        const stemTip = farY + (stemDown ? STEM_LEN : -STEM_LEN);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(stemX, nearY + (stemDown ? 2 : -2));
+        ctx.lineTo(stemX, stemTip);
+        ctx.stroke();
+
+        // One set of flags for the chord, not one per note.
+        if (info.flags >= 1) this.drawFlag(ctx, stemX, stemTip, color, stemDown);
+        if (info.flags >= 2) {
+            this.drawFlag(ctx, stemX, stemTip + (stemDown ? -(BEAM_GAP + BEAM_H) : BEAM_GAP + BEAM_H),
+                          color, stemDown);
+        }
+    }
+
     private renderNote(
         ctx: CanvasRenderingContext2D,
         f: NoteFragment,
@@ -2071,7 +2200,18 @@ export class ScoreView extends LitElement {
         beamed: boolean,
         vm: MeasureVisualLayout,
         clef: ClefDef,
+        chordOf?: Map<NoteFragment, NoteFragment[]>,
     ) {
+        // A chord is drawn as one thing, with one stem. While any of its notes
+        // is being dragged it goes back to separate noteheads: the drag preview
+        // moves one note out from under a stem the others still share, and
+        // there is no chord to draw until it lands.
+        const group = chordOf?.get(f);
+        if (group && group.length > 1 && !group.some(member => this.isDragged(member))) {
+            this.renderChord(ctx, group, yBase, beamed, vm, clef);
+            return;
+        }
+
         const k = noteKey(f.noteId);
         const isSelected = this.selection.has(k);
 
@@ -2191,53 +2331,38 @@ export class ScoreView extends LitElement {
         yBase: number,
         vm: MeasureVisualLayout,
         clef: ClefDef,
+        chordOf?: Map<NoteFragment, NoteFragment[]>,
     ) {
-        const positions = group.map(f => ({
-            f,
-            x: this.noteX(f.startTick, vm),
-            noteY: this.stepY(f.step, yBase, clef),
-        }));
+        // Each entry stands for a chord, which is usually one note.
+        const chords = group.map(f => chordOf?.get(f) ?? [f]);
+        const notes = chords.flat();
 
-        // Majority stem direction for the whole group.
-        const downCount = group.filter(f => f.step >= middleLineStep(clef)).length;
-        const stemsDown = downCount * 2 >= group.length;
+        const positions = group.map(f => ({ f, x: this.noteX(f.startTick, vm) }));
 
+        // Majority stem direction, counted over every note under the beam
+        // rather than over the chords: a three-note chord has more say in where
+        // the beam sits than a single note beside it, because it does.
+        const downCount = notes.filter(f => f.step >= middleLineStep(clef)).length;
+        const stemsDown = downCount * 2 >= notes.length;
+
+        const noteYs = notes.map(f => this.stepY(f.step, yBase, clef));
         const beamY = stemsDown
-            ? Math.max(...positions.map(p => p.noteY)) + STEM_LEN
-            : Math.min(...positions.map(p => p.noteY)) - STEM_LEN;
+            ? Math.max(...noteYs) + STEM_LEN
+            : Math.min(...noteYs) - STEM_LEN;
         const maxFlags = Math.max(...group.map(f => this.noteInfoFor(f.noteValue, f.dotted).flags));
         const stemOffset = stemsDown ? 0 : 12;
 
-        for (const { f, x, noteY } of positions) {
-            const isSelected = this.selection.has(noteKey(f.noteId));
-            const color      = isSelected ? '#4da6ff' : '#fff';
+        for (let i = 0; i < chords.length; ++i) {
+            const { stemX, nearY, allSelected } =
+                this.drawChordHeads(ctx, chords[i], yBase, vm, clef, stemsDown);
 
-            this.drawLedgerLines(ctx, x, noteY, yBase);
-            if (f.accidental) this.drawAccidental(ctx, x, noteY, color, f.accidental);
-
-            ctx.fillStyle = ctx.strokeStyle = color;
-
-            // Filled notehead
-            ctx.beginPath();
-            ctx.ellipse(x + 6, noteY, 6, 4.5, -20 * Math.PI / 180, 0, 2 * Math.PI);
-            ctx.fill();
-
-            // Augmentation dot
-            if (f.dotted) {
-                ctx.beginPath();
-                ctx.arc(x + 16, noteY - 3, 2, 0, Math.PI * 2);
-                ctx.fill();
-            }
-
-            // Stem to beam height
+            // One stem per chord, up to the beam.
+            ctx.strokeStyle = allSelected ? '#4da6ff' : '#fff';
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(x + stemOffset, stemsDown ? noteY + 2 : noteY - 2);
-            ctx.lineTo(x + stemOffset, beamY);
+            ctx.moveTo(stemX, nearY + (stemsDown ? 2 : -2));
+            ctx.lineTo(stemX, beamY);
             ctx.stroke();
-
-            // Tie
-            if (f.tieStart) this.drawTie(ctx, x, this.tieTargetX(f, vm), noteY);
         }
 
         // Beam bars
