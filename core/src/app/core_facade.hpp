@@ -35,6 +35,13 @@ public:
     void initialize();
 
     [[nodiscard]] std::string get_version() const;
+    /**
+     * Ends the process without asking anything.
+     *
+     * The way out is closing the window, which asks about unsaved work and
+     * remembers the window size. This remains for the case where there is no
+     * window to close, and nothing else should call it.
+     */
     void exit_application();
 
     // Document management

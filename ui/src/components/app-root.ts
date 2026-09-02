@@ -940,7 +940,10 @@ export class AppRoot extends LitElement {
     }
 
     async handleExit() {
-        if (confirm('Are you sure you want to exit?')) {
+        // No "are you sure": leaving is not the dangerous part, losing work is,
+        // and the core asks about that -- by name, and only when there is any.
+        // A confirmation on top of it would be a click that answers nothing.
+        {
             await CoreBridge.sendCommand('exit_application');
         }
     }

@@ -129,7 +129,16 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
         } else if (type == "get_version") {
             response["result"] = m_core.get_version();
         } else if (type == "exit_application") {
-            m_core.exit_application();
+            // Closes the window rather than ending the process, so leaving by
+            // the menu goes through the same door as clicking the X: the
+            // unsaved-work question, then the window size, then shutdown.
+            //
+            // It used to call std::exit straight out, which meant File > Exit
+            // discarded unsaved work in silence and forgot the window -- the
+            // protection added for the X was simply not on this path. Two ways
+            // out is one too many.
+            if (m_view) m_view->close();
+            else m_core.exit_application();   // no window to close: end it
         } else if (type == "new_project") {
             auto id = m_core.new_project();
             response["result"] = {{"id", id.value()}};

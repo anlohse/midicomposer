@@ -372,3 +372,34 @@ TEST_CASE("a layout that is not an object is ignored rather than adopted") {
     read.from_json(R"({"application":"MIDI Composer","uiLayout":"not an object"})");
     CHECK(read.ui_layout().empty());
 }
+
+TEST_CASE("maximized alone is remembered, with no size beside it") {
+    // Somebody who maximizes on a first run and closes has expressed a
+    // preference. Requiring a width before writing it down would drop it.
+    app::Preferences written;
+    written.set_window(0, 0, true);
+    CHECK(written.to_json().find("\"window\"") != std::string::npos);
+
+    app::Preferences read;
+    read.from_json(written.to_json());
+    CHECK(read.window_maximized());
+    CHECK(read.window_width() == 0);
+}
+
+TEST_CASE("a maximized window's own size is never the size to come back to") {
+    // The shell keeps the last un-maximized size while maximized, and this is
+    // the shape that has to survive: a flag, and a size measured earlier.
+    //
+    // Storing the maximized size instead grew the window by the display's
+    // scale factor on every maximize-close-open cycle, until it was larger
+    // than the screen with only the menu bar visible in a corner.
+    app::Preferences written;
+    written.set_window(1008, 601, false);   // measured un-maximized
+    written.set_window(1008, 601, true);    // then maximized, size unchanged
+
+    app::Preferences read;
+    read.from_json(written.to_json());
+    CHECK(read.window_maximized());
+    CHECK(read.window_width() == 1008);
+    CHECK(read.window_height() == 601);
+}

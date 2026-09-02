@@ -201,6 +201,26 @@ UnsavedChoice ask_unsaved_changes(const std::string& what) {
 #endif
 }
 
+
+std::pair<int, int> window_size_that_fits(int width, int height,
+                                          int fallback_width, int fallback_height) {
+    if (width <= 0 || height <= 0) return {fallback_width, fallback_height};
+#ifdef _WIN32
+    RECT work{};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        const int available_width = work.right - work.left;
+        const int available_height = work.bottom - work.top;
+        if (available_width > 0 && available_height > 0) {
+            // Written out rather than with std::min: this file includes
+            // windows.h, which defines min as a macro and breaks the call.
+            if (width > available_width) width = available_width;
+            if (height > available_height) height = available_height;
+        }
+    }
+#endif
+    return {width, height};
+}
+
 } // namespace midi_composer::shell
 
 #else

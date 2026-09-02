@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace midi_composer::shell {
 
@@ -40,6 +41,19 @@ std::string webview2_runtime_version();
 // before there is a window to show them in, and a user who double-clicked the
 // executable would otherwise see nothing at all.
 void show_error_dialog(const std::string& title, const std::string& message);
+
+/**
+ * A window size that will actually fit on this display.
+ *
+ * Returns the fallback when nothing was remembered, and shrinks anything that
+ * would not fit in the desktop's work area. A size can outlive the monitor it
+ * was measured on -- a laptop undocked from a large screen, a display unplugged
+ * -- and a window larger than the screen cannot be grabbed to be made smaller,
+ * which leaves no way out except editing the preferences file.
+ */
+[[nodiscard]] std::pair<int, int> window_size_that_fits(int width, int height,
+                                                        int fallback_width,
+                                                        int fallback_height);
 
 /** What to do about work that has not been written to disk. */
 enum class UnsavedChoice { Save, Discard, Cancel };

@@ -10,6 +10,7 @@
 #include <saucer/smartview.hpp>
 #include <saucer/serializers/glaze/glaze.hpp>
 #include <memory>
+#include <tuple>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -143,16 +144,22 @@ int main() {
         // can be asked about it.
         if (!midi_composer::shell::resolve_unsaved_all(app_context.core())) return true;
 
-        // The size is read here rather than on every resize: this is the only
-        // moment it is certainly final, and a preferences write per drag of a
-        // window edge would be a file written hundreds of times for nothing.
+        // Read here rather than on every resize: this is the only moment the
+        // size is certainly final, and a preferences write per drag of a window
+        // edge would be a file written hundreds of times for nothing.
         //
-        // Its own size while maximized is the restored size, which is what
-        // should come back when the window is un-maximized later -- so both are
-        // kept and neither replaces the other.
-        const auto [width, height] = view.size();
-        if (auto saved = app_context.core().remember_window(width, height, view.maximized());
-            !saved) {
+        // A maximized window's size is the screen's, not the size to come back
+        // to -- so while maximized only the flag is recorded and whatever was
+        // last measured un-maximized is kept. An earlier version of this stored
+        // the maximized size as the restore size, and it grew by the display's
+        // scale factor on every maximize-close-open cycle until the window was
+        // larger than the screen with the menu bar alone visible in a corner.
+        const bool maximized = view.maximized();
+        int width = app_context.core().preferences().window_width();
+        int height = app_context.core().preferences().window_height();
+        if (!maximized) std::tie(width, height) = view.size();
+
+        if (auto saved = app_context.core().remember_window(width, height, maximized); !saved) {
             MC_LOG_WARN("Could not remember the window size: {}", saved.error().message);
         }
 
@@ -191,16 +198,16 @@ int main() {
     view.set_title("MIDI Composer");
 
     // The size from last time, or a sensible default on a first run. Validated
-    // in the preferences, so what arrives here is either usable or nothing.
+    // in the preferences, and clamped to a window that fits on this display --
+    // a size remembered on a larger monitor, or on one no longer attached, must
+    // not come back as a window bigger than the screen.
     {
         const auto& prefs = app_context.core().preferences();
-        if (prefs.window_width() > 0 && prefs.window_height() > 0) {
-            view.set_size(prefs.window_width(), prefs.window_height());
-        } else {
-            view.set_size(1280, 720);
-        }
-        // After the size, so un-maximizing later lands on the size above
-        // rather than on whatever the window happened to be first.
+        auto [width, height] = midi_composer::shell::window_size_that_fits(
+            prefs.window_width(), prefs.window_height(), 1280, 720);
+        view.set_size(width, height);
+        // After the size, so un-maximizing later lands on the size above rather
+        // than on whatever the window happened to be first.
         if (prefs.window_maximized()) view.set_maximized(true);
     }
 

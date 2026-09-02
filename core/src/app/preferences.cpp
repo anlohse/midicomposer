@@ -237,7 +237,11 @@ std::string Preferences::to_json() const {
     // Only once there is something to remember: a fresh install should not
     // carry a window size it never chose, and an empty object in the file
     // invites the question of what it is for.
-    if (m_window_width > 0 && m_window_height > 0) {
+    //
+    // Maximized counts as something even with no size beside it. Somebody who
+    // maximizes on a first run and closes has expressed a preference, and
+    // requiring a width to write it down would drop it.
+    if ((m_window_width > 0 && m_window_height > 0) || m_window_maximized) {
         out["window"] = {{"width", m_window_width},
                          {"height", m_window_height},
                          {"maximized", m_window_maximized}};
