@@ -6,6 +6,7 @@
 #include <array>
 #include <vector>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <cstdint>
 #include <memory>
@@ -251,6 +252,16 @@ private:
     int m_sample_rate{48000};
     std::atomic<int>      m_active_voices{0};
     std::atomic<uint64_t> m_dropped{0};
+
+    /**
+     * Whether to write a line for every note started.
+     *
+     * Off unless MC_TRACE_NOTES is set. What it answers is "did the sampler
+     * receive this note at all", which separates a fault in the score or the
+     * routing from one in the sound -- and it can be answered on the machine
+     * where the problem happens rather than only on this one.
+     */
+    const bool m_trace_notes = std::getenv("MC_TRACE_NOTES") != nullptr;
 };
 
 } // namespace midi_composer::playback

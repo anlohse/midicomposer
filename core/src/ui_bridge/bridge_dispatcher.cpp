@@ -402,6 +402,22 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
                                                    ? payload.at("milliseconds").get<int>()
                                                    : 700);
             if (!res) { response["success"] = false; response["error"] = res.error().message; }
+        } else if (type == "get_routing_info") {
+            // Which plugin each channel actually reaches. Per-track routing
+            // (§9a) decides this from the document, and a track that sounds
+            // wrong because its channel goes somewhere unexpected is otherwise
+            // invisible: the score, the mixer and the instrument list all look
+            // right while the audio comes from another plugin.
+            nlohmann::json channels = nlohmann::json::array();
+            for (uint8_t ch = 0; ch < 16; ++ch) {
+                auto* target = m_core.routing().target_for(ch);
+                channels.push_back({{"channel", ch},
+                                    {"output", target ? std::string(target->id()) : ""}});
+            }
+            nlohmann::json result;
+            result["channels"] = channels;
+            result["selected"] = std::string(m_core.output().id());
+            response["result"] = result;
         } else if (type == "get_output_info") {
             // The selected output, its declared parameters and their current
             // values, in one round trip. Values come back with the schema

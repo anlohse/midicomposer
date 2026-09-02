@@ -171,6 +171,12 @@ public:
 
     [[nodiscard]] playback::PlaybackEngine& playback_engine() { return m_playback_engine; }
     [[nodiscard]] device::MidiService& midi_service() { return m_midi_service; }
+    /** Where each channel's notes actually go. Read for reporting: per-track
+        routing decides this from the document, and a track that sounds wrong
+        because its channel reaches an unexpected plugin looks right everywhere
+        else. */
+    [[nodiscard]] const playback::RoutingOutput& routing() const { return m_routing; }
+
     /** The selected output. */
     [[nodiscard]] playback::OutputPlugin& output() { return *m_selected_output; }
     /** The audio device, open only while an output that makes sound is

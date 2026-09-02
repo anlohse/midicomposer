@@ -1,5 +1,7 @@
 #include "spc700_output.hpp"
 
+#include "base/logger.hpp"
+
 #include "playback/gaussian_table.hpp"
 
 #include <algorithm>
@@ -259,6 +261,16 @@ void Spc700Output::start_note(uint8_t channel, uint8_t pitch, uint8_t velocity) 
     // playing the first and calling the result the instrument.
     const Zone* matched[kVoices] = {};
     const int count = m_block_bank->zones_for(ch.program, pitch, velocity, matched, kVoices);
+    // A note that matches nothing is the one failure a musician cannot see:
+    // the score, the mixer and the instrument list all look right and the note
+    // makes no sound. Rare by construction, so saying so costs nothing.
+    if (count == 0) {
+        MC_LOG_WARN("Nothing in program {} answers key {} at velocity {}",
+                    ch.program + 1, pitch, velocity);
+    } else if (m_trace_notes) {
+        MC_LOG_INFO("note ch={} program={} key={} velocity={} voices={}",
+                    channel & 0x0F, ch.program + 1, pitch, velocity, count);
+    }
 
     for (int i = 0; i < count; ++i) {
         const Zone* zone = matched[i];
