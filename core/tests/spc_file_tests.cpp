@@ -3,6 +3,10 @@
 #include "io/brr.hpp"
 #include "io/spc_adsr.hpp"
 #include "io/spc_file.hpp"
+
+#include "bank_safety.hpp"
+
+#include <random>
 #include "playback/spc700_output.hpp"
 
 #include <cstdint>
@@ -500,4 +504,46 @@ TEST_CASE("a sample no voice names still feeds the echo") {
     const auto bank = io::parse_spc(file, "Rip");
     REQUIRE(bank.has_value());
     CHECK((*bank)->programs[0].zones[0].echo_send);
+}
+
+// ── Damaged input ────────────────────────────────────────────────────────────
+//
+// A rip is 64KB of a console's memory with a directory somewhere inside it, and
+// the directory is 256 entries whether or not the game filled them. That makes
+// a damaged file harder to reject than a damaged SoundFont: there is no chunk
+// structure to disagree with, so almost any mutation still "parses" and the
+// safety has to come from the checks on what it found.
+
+TEST_CASE("a damaged rip is refused or safe, never fatal") {
+    SpcSpec spec;
+    // Three entries, one of them looping into its own middle: enough structure
+    // that a mutation has something to be wrong about.
+    spec.entries = {
+        {0x1000, simple_sample(6), 0x1000 + 9},
+        {0x2000, simple_sample(4), 0x2000},
+        {0x3000, simple_sample(10), 0x3000 + 18},
+    };
+    const std::string good = build_spc(spec);
+    REQUIRE(io::parse_spc(good, "Control").has_value());
+
+    std::mt19937 rng{20260902u};
+    int refused = 0;
+    int accepted = 0;
+    size_t most_samples = 0;
+    for (int i = 0; i < 300; ++i) {
+        const auto bytes = testing::damaged(good, rng, i);
+        auto bank = io::parse_spc(bytes, "Damaged");
+        if (!bank) {
+            CHECK_FALSE(bank.error().message.empty());
+            ++refused;
+            continue;
+        }
+        ++accepted;
+        most_samples = std::max(most_samples, (*bank)->samples.size());
+        testing::must_be_safe_to_play(**bank);
+        testing::play_briefly(*bank);
+    }
+    MESSAGE(refused, " of 300 damaged rips refused, ", accepted,
+            " parsed into something safe to play (at most ", most_samples, " samples)");
+    CHECK(accepted > 0);
 }

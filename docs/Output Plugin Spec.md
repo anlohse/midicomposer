@@ -1080,6 +1080,62 @@ Counted after the fix: CTinstruments 25 of 39 zones loop, ExpressiveSNES 202 of
 but carry no usable loop points, which is a font saying loop and giving nothing
 to loop.
 
+### 11a.9d What a loader promises about a file it did not write
+
+Both loaders read files somebody else made, and a bank is the only thing between
+those bytes and a real-time thread that indexes arrays with what it finds. So the
+contract is stated and tested rather than assumed:
+
+- **A bank either fails to load or is safe to play.** Every zone names a sample
+  that exists, every loop lies inside that sample's frames, every range runs low
+  to high, every root key is on the keyboard, and every sample rate is positive.
+- **A refusal says something.** An empty error message is a failure with no
+  report, which §8 already forbids.
+- **Playing it produces finite audio inside ±1**, and drops no events.
+
+Checked by mutating a valid file and loading the result: a flipped byte, a
+truncation, and a smashed sixteen-byte run, seeded so a failure can be run again.
+Mutation rather than random bytes, because a file that is almost valid reaches
+far deeper into a parser than noise does -- noise is rejected by the first four
+bytes. Six hundred damaged SoundFonts leave 397 refused and 203 loading into
+something playable; three hundred damaged rips leave 100 refused and 200 loading,
+which is the expected asymmetry: an `.spc` is 64KB of console memory with no
+chunk structure to disagree with, so its safety comes from the checks on what was
+found rather than from the format rejecting the file.
+
+**It found one real fault**, reachable from any partly corrupt SoundFont: the
+sample rate is a 32-bit field, only zero was being guarded, and a damaged one
+holding four billion became a *negative* int on the way into the bank. A negative
+rate walks a voice backwards from where it started. The loader now believes the
+field only inside 400..192000 -- the format's own floor and a sane ceiling -- and
+falls back the way it already did for zero. The audio thread stopped trusting the
+bank as well, since it is the one place where being wrong is heard as a click and
+debugged as a mystery.
+
+**Gaps are reported, not invented.** A program whose zones leave part of the
+keyboard uncovered is silent on those keys and looks healthy everywhere else. The
+real-bank test counts them: none in ExpressiveSNES.sf2 or Zelda_3.sf2, eleven of
+thirty-nine programs in CTinstruments.sf2, the widest run being the eight keys
+above 119 that its Rhodes simply does not map. That is the font's decision and
+not a defect to paper over -- so it is measured and left alone, and a note that
+lands in one says so in the log when it is played.
+
+### 11a.9e Asking the application what it is doing
+
+Three switches, all off by default, all for the questions that took longest to
+answer:
+
+| | |
+|---|---|
+| `MC_TRACE_NOTES=1` | A line for every note the sampler starts: program, key, velocity, voices taken. Answers "did this reach the sampler at all", which separates a fault in the score or the routing from one in the sound. |
+| `MC_LOG_LEVEL=debug` | Everything crossing the bridge. Compiled in always -- it was not, once, and a whole tracing attempt produced an empty log -- and quiet unless asked for. |
+| `MC_BANK_DIR=<folder>` | Points the test suite at real `.sf2` and `.spc` files. Skipped when unset, because the suite has to pass on a machine that has none. |
+
+Plus `get_routing_info`, which reports the plugin each of the sixteen channels
+reaches. Per-track routing decides that from the document, and a track sounding
+wrong because its channel goes somewhere unexpected is invisible in the score,
+the mixer and the instrument list alike.
+
 ### 11a.10 Still missing
 
 - **A fuller envelope for a rip**, with one route already closed. Only the

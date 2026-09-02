@@ -132,6 +132,18 @@ constexpr uint16_t kGenVelocityRange    = 44;
     offset from something. */
 constexpr int16_t kAbsentEnvelopeTimecents = -12000;
 
+/**
+ * The band a sample rate has to fall in to be believed.
+ *
+ * The format says a rate below 400 is not supported and names no ceiling. A
+ * ceiling is needed anyway: the field is 32 bits, and a damaged one holding
+ * four billion becomes a *negative* int on the way into the bank, which makes
+ * a voice read backwards from where it started. Found by fuzzing the loader,
+ * and reachable from any partly corrupt file.
+ */
+constexpr uint32_t kLowestRate = 400;
+constexpr uint32_t kHighestRate = 192000;
+
 /** Timecents to seconds. SF2 states envelope times logarithmically, and its
     "no time at all" value is a very large negative rather than zero. */
 float timecents_to_seconds(int16_t timecents) {
@@ -428,7 +440,13 @@ base::Result<std::shared_ptr<SampleBank>> parse_sf2(const std::string& bytes,
                     for (size_t i = 0; i < frames; ++i) {
                         sample.data[i] = static_cast<float>(audio.i16()) / 32768.0f;
                     }
-                    sample.source_rate = header.rate > 0 ? static_cast<int>(header.rate) : 44100;
+                    // Outside the band, the header is not to be trusted about
+                    // this sample at all -- but the audio usually is, so it is
+                    // played at a plausible rate rather than thrown away.
+                    sample.source_rate =
+                        (header.rate >= kLowestRate && header.rate <= kHighestRate)
+                            ? static_cast<int>(header.rate)
+                            : 44100;
 
                     bank->samples.push_back(std::move(sample));
                     index = static_cast<int>(bank->samples.size()) - 1;
