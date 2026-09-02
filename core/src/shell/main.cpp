@@ -3,6 +3,7 @@
 #include "base/logger.hpp"
 #include "shell/com_apartment.hpp"
 #include "shell/crash_report.hpp"
+#include "shell/unsaved_changes.hpp"
 #include "shell/file_dialogs.hpp"
 #include "shell/ui_bundle.hpp"
 #include "ui_bridge/bridge_dispatcher.hpp"
@@ -137,6 +138,10 @@ int main() {
     midi_composer::shell::test_crash_if_asked("after-webview");
 
     view.on<saucer::window_event::close>([&app_context]() -> bool {
+        // Returning true keeps the window. Work that is not on disk is the one
+        // thing worth stopping a close for, and this is the last moment anyone
+        // can be asked about it.
+        if (!midi_composer::shell::resolve_unsaved_all(app_context.core())) return true;
         app_context.core().shutdown();
         return false; // false = allow the window to close
     });

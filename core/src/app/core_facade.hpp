@@ -52,6 +52,20 @@ public:
     base::Result<base::CompositionId> import_midi(const std::string& path);
     [[nodiscard]] std::string get_project_path(base::CompositionId id) const;
 
+    /**
+     * Which documents hold work that is not on disk, and what they are called.
+     *
+     * A document has known whether it is dirty since persistence landed, and
+     * the tab has shown an asterisk for it. Nothing could *ask*, so nothing
+     * did: closing discarded the work in silence. The shell asks now, and
+     * these are what it asks about -- reported rather than acted on here,
+     * because a facade has no business opening dialogs.
+     */
+    [[nodiscard]] bool has_unsaved_changes(base::CompositionId id) const;
+    [[nodiscard]] std::vector<base::CompositionId> unsaved_documents() const;
+    /** For the question. Falls back to something rather than an empty name. */
+    [[nodiscard]] std::string document_title(base::CompositionId id) const;
+
     // Note editing
     base::Result<base::NoteId> create_note(base::CompositionId doc_id, base::TrackId track_id, int64_t tick, int64_t duration, uint8_t pitch, uint8_t velocity);
     base::Result<void> delete_note(base::CompositionId doc_id, base::TrackId track_id, base::NoteId note_id);
