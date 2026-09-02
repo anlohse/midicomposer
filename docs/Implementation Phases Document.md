@@ -65,6 +65,7 @@ Recommended implementation phases:
 11. MIDI import/export MVP
 12. Native project persistence and polish
 13. Stabilization and MVP hardening
+14. Distribution and SmartScreen — post-MVP, required for 1.0.0 (§18)
 
 ---
 
@@ -794,6 +795,67 @@ Phase 13 is complete when:
 
 * the app is usable as an MVP
 * the main workflows are stable enough for regular testing/demo use
+
+---
+
+# 18. Phase 14 — Distribution and SmartScreen
+
+Post-MVP, and a requirement for 1.0.0 — possibly worth its own 0.4.0.
+
+## 18.1 The problem
+
+The installer is unsigned. Windows SmartScreen shows "Windows protected your
+PC" for a file that carries the Mark of the Web and has no reputation, and an
+unsigned installer never acquires one. A person downloading MIDI Composer has to
+click through a warning that, read plainly, tells them not to.
+
+Measured on 2026-09-02, so the starting point is not in doubt:
+
+* the installer target builds — `MIDIComposer-0.3.0-setup.exe`, 758 KB, from the
+  hand-written `installer/midi_composer.nsi` via NSIS
+* `Get-AuthenticodeSignature` reports **NotSigned**
+
+That is the whole of it. Nothing is broken; nothing is signed.
+
+## 18.2 The two routes
+
+Researched by the project owner:
+
+| Route | Cost | Availability | SmartScreen | Store eligible | Suits |
+|---|---|---|---|---|---|
+| Microsoft Store (MSIX) — the Store re-signs the package | Free | Worldwide | No warnings | Yes | Recommended for most new applications |
+| Microsoft Store (MSI/EXE installer) — the publisher signs | Certificate chaining to a Trusted Root Program CA, price varies by CA | Worldwide | No SmartScreen prompt when installed from the Store (UAC may still appear) | Yes | Existing Win32 applications shipped through the MSI/EXE path |
+
+Two things to confirm against current Microsoft policy rather than take from
+here, because both have moved before: whether a standard (OV) code signing
+certificate now earns SmartScreen reputation immediately or still accrues it
+over downloads, and what a Partner Center developer account costs today.
+
+## 18.3 What either route costs this application
+
+Not a packaging checkbox. Three parts of the design touch it:
+
+* **The WebView2 runtime.** The NSIS script detects it and bootstraps it at
+  install time, which is why the installer is hand-written rather than CPack's.
+  An MSIX declares dependencies instead of running code, so this has to be
+  expressed as a package dependency or the runtime has to be carried.
+* **The plugin folder.** §10.3 gave the application a folder to paste CLAP
+  plugins into, deliberately user-writable. MSIX virtualises parts of the
+  filesystem, and loading native code a user dropped into a folder is exactly
+  the kind of thing a packaged app is restricted from doing freely. This needs
+  answering before choosing MSIX, not after.
+* **Preferences, the log and the webview profile.** They live under `%APPDATA%`
+  and `%LOCALAPPDATA%` (see `app/preferences.cpp` and `base/logger.hpp`). Under
+  MSIX those writes are redirected, which is survivable but changes where a
+  person finds their own files — and the crash log is only useful if it can be
+  found.
+
+## 18.4 Order of work
+
+Signing the existing installer is the smaller change and does not disturb the
+plugin story, so it is the first thing to price. The Store MSIX route is the
+better end state if the plugin folder question resolves, and the answer to that
+is a decision about what the application is rather than about packaging.
 
 ---
 
