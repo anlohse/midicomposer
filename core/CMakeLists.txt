@@ -153,6 +153,12 @@ endif()
 target_compile_definitions(midi_composer_core
     PUBLIC
         SPDLOG_FMT_EXTERNAL
+        # Otherwise SPDLOG_DEBUG compiles to nothing. spdlog gates the macro at
+        # compile time on this, and it defaults to info -- so every MC_LOG_DEBUG
+        # in this project was being removed by the preprocessor, and the runtime
+        # level the logger sets had nothing left to let through. What the level
+        # is at runtime stays the logger's decision.
+        SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
     PRIVATE
         # The one place the version is written down is project() above. The
         # installer already read it from there; the About box used to carry its

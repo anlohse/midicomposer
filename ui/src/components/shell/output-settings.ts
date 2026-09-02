@@ -51,6 +51,22 @@ export interface OutputInfo {
     parameters: OutputParameter[];
 }
 
+/**
+ * The file an output loaded its content from, named rather than pathed.
+ *
+ * An output that reads a file declares it as a `file` parameter, so this needs
+ * to know nothing about sample banks: the first one with a value is what the
+ * plugin is playing out of. Empty when the output has no such parameter, which
+ * is most of them.
+ */
+export function loadedFileName(info: OutputInfo | null): string {
+    const file = info?.parameters.find(p => p.type === 'file' && typeof p.value === 'string' && p.value);
+    if (!file) return '';
+    const path = String(file.value);
+    const name = path.split(/[\\/]/).pop() ?? path;
+    return name.replace(/\.[^.]+$/, '');
+}
+
 /** The whole schema, values included, in one call. */
 export async function loadOutputInfo(): Promise<OutputInfo | null> {
     try {

@@ -3,7 +3,7 @@ import { customElement, property, state, query } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { DocumentSnapshot, TrackSnapshot } from '../../models/document';
 import { CoreBridge } from '../../bridge/coreBridge';
-import { loadOutputInfo, type OutputChoice } from '../shell/output-settings';
+import { loadOutputInfo, loadedFileName, type OutputChoice } from '../shell/output-settings';
 import { pitchName } from '../../models/pitch';
 import { GM_FAMILIES, gmProgramName, isPercussionChannel } from '../../models/gmPrograms';
 import { CLEFS, CLEF_ORDER, clefDef } from '../../models/clef';
@@ -204,6 +204,7 @@ export class MidiEventsPanel extends LitElement {
         }
         button.add:hover:not(:disabled) { background: #3d3d3d; border-color: #007acc; }
         button.add:disabled { color: #666; cursor: default; }
+        .source { color: #8a8a8a; font-size: 0.9em; }
         button.listen {
             background: #333;
             border: 1px solid #4a4a4a;
@@ -438,7 +439,12 @@ export class MidiEventsPanel extends LitElement {
             </div>
 
             <div class="field-group">
-                <label for="instrument">Instrument</label>
+                <label for="instrument">
+                    Instrument${this.programSource
+                        ? html`<span class="source" title="Where these instrument names come from"
+                               > · ${this.programSource}</span>`
+                        : ''}
+                </label>
                 <select id="instrument" class="instrument"
                         title=${this.programs.length
                             ? this.programs.some(p => p.name)
@@ -503,10 +509,21 @@ export class MidiEventsPanel extends LitElement {
      */
     @state() private programs: Array<{ program: number; name: string }> = [];
 
+    /**
+     * What the instrument names came from, shown beside the picker.
+     *
+     * Without this the list is 128 names with no provenance, and loading the
+     * wrong bank looks exactly like the application being wrong: instruments
+     * that should exist are missing, and the ones that remain sound like
+     * something else. That cost an afternoon once.
+     */
+    @state() private programSource = '';
+
     async connectedCallback() {
         super.connectedCallback();
         const info = await loadOutputInfo();
         this.availableOutputs = info?.available ?? [];
+        this.programSource = loadedFileName(info);
         await this.loadProgramNames();
         window.addEventListener('mc-output-changed', this.onOutputChanged);
     }
@@ -516,7 +533,10 @@ export class MidiEventsPanel extends LitElement {
         super.disconnectedCallback();
     }
 
-    private onOutputChanged = () => { void this.loadProgramNames(); };
+    private onOutputChanged = () => {
+        void this.loadProgramNames();
+        void loadOutputInfo().then(info => { this.programSource = loadedFileName(info); });
+    };
 
     private async loadProgramNames() {
         try {
