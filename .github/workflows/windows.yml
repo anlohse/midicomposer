@@ -23,7 +23,13 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Full history, deliberately: the build takes its version from
+      # `git describe`, and the default shallow checkout fetches no tags, so
+      # every build would call itself 0.0.0. This is the only reason the depth
+      # matters here.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Matches the version used locally. The UI test script relies on the test
       # runner expanding a glob, which older releases do not do.

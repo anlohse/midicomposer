@@ -1,9 +1,58 @@
 cmake_minimum_required(VERSION 3.25)
 
+# ── The version comes from the tag ──────────────────────────────────────────
+#
+# It used to be typed here, which meant it was typed here *and* in a tag, and
+# the two drifted the moment a commit landed after a release: the build called
+# itself 0.3.0 while being two commits past the 0.3.0 tag. One source of truth,
+# and the tag is the better candidate -- it is the thing a release actually is.
+#
+# `git describe` answers with the tag when sitting exactly on one, and with
+# `v0.3.0-2-g56d6c00` when not. Both are used, differently:
+#
+#   PROJECT_VERSION           just the numbers, because project() takes only
+#                             those, and the installer needs a version resource
+#   MIDI_COMPOSER_VERSION     the whole string, so a build that is not a
+#                             release says so instead of claiming to be one
+#
+# The override is for building without git -- a source archive, or reproducing
+# a release from one. Nothing else should need it: CI checks out with tags and
+# lets this derive.
+set(MIDI_COMPOSER_VERSION_OVERRIDE "" CACHE STRING
+    "Version to build, without the leading v. Empty asks git.")
+
+set(_mc_described "")
+if(MIDI_COMPOSER_VERSION_OVERRIDE)
+    set(_mc_described "${MIDI_COMPOSER_VERSION_OVERRIDE}")
+else()
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --match "v[0-9]*"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _mc_described
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+    endif()
+endif()
+
+string(REGEX REPLACE "^v" "" _mc_described "${_mc_described}")
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" _mc_numeric "${_mc_described}")
+
+# Zero rather than the last release: a build that cannot tell which version it
+# is must not answer with one that exists. The installer script already uses
+# 0.0.0 for the same reason when nothing is passed to it.
+if(NOT _mc_numeric)
+    set(_mc_numeric "0.0.0")
+    set(_mc_described "0.0.0")
+endif()
+
 project(MIDIComposer
-    VERSION 0.3.0
+    VERSION ${_mc_numeric}
     LANGUAGES CXX
 )
+
+message(STATUS "MIDI Composer version: ${_mc_described} (product version ${PROJECT_VERSION})")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,10 +211,12 @@ target_compile_definitions(midi_composer_core
         # is at runtime stays the logger's decision.
         SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
     PRIVATE
-        # The one place the version is written down is project() above. The
-        # installer already read it from there; the About box used to carry its
-        # own copy and drifted two releases behind.
-        MIDI_COMPOSER_VERSION="${PROJECT_VERSION}"
+        # The whole descriptive string, not just the numbers: on a release
+        # they are the same, and off one this is what stops a build claiming
+        # to be a version it is two commits past. The installer takes
+        # PROJECT_VERSION instead, because a version resource has to be
+        # numbers.
+        MIDI_COMPOSER_VERSION="${_mc_described}"
 )
 
 set_project_warnings(midi_composer_core)
