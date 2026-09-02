@@ -546,7 +546,17 @@ nlohmann::json BridgeDispatcher::handle_command(const std::string& type, const n
             const auto own = midi_composer::app::Preferences::plugin_folder().u8string();
             result["pluginFolder"] =
                 std::string(reinterpret_cast<const char*>(own.c_str()), own.size());
+            // Whatever the interface asked to have remembered. Opaque to the
+            // core, so a new panel needs no change down here.
+            result["uiLayout"] = prefs.ui_layout();
             response["result"] = result;
+        } else if (type == "set_ui_layout") {
+            // Saved immediately rather than at exit: a panel someone collapsed
+            // should still be collapsed after a crash, and this file is small.
+            auto layout = payload.value("layout", nlohmann::json::object());
+            if (!layout.is_object()) layout = nlohmann::json::object();
+            auto res = m_core.set_ui_layout(std::move(layout));
+            if (!res) { response["success"] = false; response["error"] = res.error().message; }
         } else if (type == "set_clap_search_paths") {
             std::vector<std::string> paths;
             for (const auto& entry : payload.at("paths")) {

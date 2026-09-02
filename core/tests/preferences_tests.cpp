@@ -300,3 +300,75 @@ TEST_CASE("The default location is under the user's profile") {
         CHECK(path.has_parent_path());
     }
 }
+
+// ── Remembered layout ────────────────────────────────────────────────────────
+//
+// A window size read back from a file is a size somebody could have
+// hand-edited, or one left over from a monitor that is no longer attached.
+// Restoring a window nobody can see or resize leaves no obvious way out except
+// finding this file, so what comes out of here is either usable or nothing.
+
+TEST_CASE("a window size survives a round trip") {
+    app::Preferences written;
+    written.set_window(1008, 601, false);
+
+    app::Preferences read;
+    read.from_json(written.to_json());
+    CHECK(read.window_width() == 1008);
+    CHECK(read.window_height() == 601);
+    CHECK_FALSE(read.window_maximized());
+}
+
+TEST_CASE("maximized is remembered apart from the size") {
+    // Both, deliberately: the size is what un-maximizing should land on, so
+    // one must not replace the other.
+    app::Preferences written;
+    written.set_window(1280, 720, true);
+
+    app::Preferences read;
+    read.from_json(written.to_json());
+    CHECK(read.window_maximized());
+    CHECK(read.window_width() == 1280);
+}
+
+TEST_CASE("nothing remembered yet reads as nothing, not as zero by accident") {
+    app::Preferences fresh;
+    CHECK(fresh.window_width() == 0);
+    CHECK(fresh.window_height() == 0);
+    // And a first run writes no window at all rather than a size nobody chose.
+    CHECK(fresh.to_json().find("\"window\"") == std::string::npos);
+}
+
+TEST_CASE("a window too small to use is refused") {
+    app::Preferences read;
+    read.from_json(R"({"application":"MIDI Composer","window":{"width":1200,"height":4}})");
+    CHECK(read.window_width() == 0);
+    CHECK(read.window_height() == 0);
+}
+
+TEST_CASE("a window larger than any desktop is refused") {
+    app::Preferences read;
+    read.from_json(R"({"application":"MIDI Composer","window":{"width":99999,"height":800}})");
+    CHECK(read.window_width() == 0);
+}
+
+TEST_CASE("the interface's own layout is stored and handed back unchanged") {
+    // Opaque on purpose: adding a fourth panel toggle must not need a change
+    // in this file.
+    app::Preferences written;
+    written.set_ui_layout(nlohmann::json{{"mixerCollapsed", true},
+                                         {"showRuler", false},
+                                         {"somethingNew", 7}});
+
+    app::Preferences read;
+    read.from_json(written.to_json());
+    CHECK(read.ui_layout().at("mixerCollapsed").get<bool>());
+    CHECK_FALSE(read.ui_layout().at("showRuler").get<bool>());
+    CHECK(read.ui_layout().at("somethingNew").get<int>() == 7);
+}
+
+TEST_CASE("a layout that is not an object is ignored rather than adopted") {
+    app::Preferences read;
+    read.from_json(R"({"application":"MIDI Composer","uiLayout":"not an object"})");
+    CHECK(read.ui_layout().empty());
+}

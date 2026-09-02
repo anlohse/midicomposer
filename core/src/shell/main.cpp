@@ -137,11 +137,25 @@ int main() {
     midi_composer::shell::reassert_crash_reporting("the WebView2 runtime");
     midi_composer::shell::test_crash_if_asked("after-webview");
 
-    view.on<saucer::window_event::close>([&app_context]() -> bool {
+    view.on<saucer::window_event::close>([&app_context, &view]() -> bool {
         // Returning true keeps the window. Work that is not on disk is the one
         // thing worth stopping a close for, and this is the last moment anyone
         // can be asked about it.
         if (!midi_composer::shell::resolve_unsaved_all(app_context.core())) return true;
+
+        // The size is read here rather than on every resize: this is the only
+        // moment it is certainly final, and a preferences write per drag of a
+        // window edge would be a file written hundreds of times for nothing.
+        //
+        // Its own size while maximized is the restored size, which is what
+        // should come back when the window is un-maximized later -- so both are
+        // kept and neither replaces the other.
+        const auto [width, height] = view.size();
+        if (auto saved = app_context.core().remember_window(width, height, view.maximized());
+            !saved) {
+            MC_LOG_WARN("Could not remember the window size: {}", saved.error().message);
+        }
+
         app_context.core().shutdown();
         return false; // false = allow the window to close
     });
@@ -175,7 +189,20 @@ int main() {
     });
 
     view.set_title("MIDI Composer");
-    view.set_size(1280, 720);
+
+    // The size from last time, or a sensible default on a first run. Validated
+    // in the preferences, so what arrives here is either usable or nothing.
+    {
+        const auto& prefs = app_context.core().preferences();
+        if (prefs.window_width() > 0 && prefs.window_height() > 0) {
+            view.set_size(prefs.window_width(), prefs.window_height());
+        } else {
+            view.set_size(1280, 720);
+        }
+        // After the size, so un-maximizing later lands on the size above
+        // rather than on whatever the window happened to be first.
+        if (prefs.window_maximized()) view.set_maximized(true);
+    }
 
     // Force a variable on window to confirm native context
     view.inject("window.is_native_host = true;", saucer::load_time::creation);

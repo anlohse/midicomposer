@@ -14,6 +14,12 @@ namespace {
 // Bumped only when an older file would be *misread* rather than merely
 // incomplete. Unknown keys are ignored and missing ones keep their default, so
 // most additions need no bump at all.
+/** What a window size has to fall between to be believed. Small enough to
+    allow a deliberately narrow window, large enough for any real desktop, and
+    both ends there to stop a damaged file restoring something unusable. */
+constexpr int kMinimumWindow = 240;
+constexpr int kMaximumWindow = 20000;
+
 constexpr int kSchemaVersion = 1;
 
 // What makes the file recognisable as ours rather than merely as valid JSON.
@@ -182,6 +188,30 @@ void Preferences::from_json(const std::string& text) {
             if (entry.is_string()) m_clap_search_paths.push_back(entry.get<std::string>());
         }
     }
+
+    // A window size is only accepted if it could be a window. A hand-edited
+    // file with a height of four, or a size left over from a monitor that is no
+    // longer attached, would restore something nobody can use and no obvious
+    // way to fix it except finding this file. So it is validated here and the
+    // shell gets either a usable size or nothing.
+    m_window_width = 0;
+    m_window_height = 0;
+    m_window_maximized = false;
+    if (const auto it = parsed.find("window"); it != parsed.end() && it->is_object()) {
+        const int width = it->value("width", 0);
+        const int height = it->value("height", 0);
+        if (width >= kMinimumWindow && width <= kMaximumWindow &&
+            height >= kMinimumWindow && height <= kMaximumWindow) {
+            m_window_width = width;
+            m_window_height = height;
+        }
+        m_window_maximized = it->value("maximized", false);
+    }
+
+    m_ui_layout = nlohmann::json::object();
+    if (const auto it = parsed.find("uiLayout"); it != parsed.end() && it->is_object()) {
+        m_ui_layout = *it;
+    }
 }
 
 std::string Preferences::to_json() const {
@@ -203,6 +233,16 @@ std::string Preferences::to_json() const {
     }
     out["outputParameters"] = std::move(parameters);
     out["clapSearchPaths"] = m_clap_search_paths;
+
+    // Only once there is something to remember: a fresh install should not
+    // carry a window size it never chose, and an empty object in the file
+    // invites the question of what it is for.
+    if (m_window_width > 0 && m_window_height > 0) {
+        out["window"] = {{"width", m_window_width},
+                         {"height", m_window_height},
+                         {"maximized", m_window_maximized}};
+    }
+    if (!m_ui_layout.empty()) out["uiLayout"] = m_ui_layout;
 
     // Indented: this is a file a user may well open to see what it is doing to
     // their machine, and one long line answers that badly.

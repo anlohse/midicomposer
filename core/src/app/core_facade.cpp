@@ -790,6 +790,16 @@ base::Result<void> CoreFacade::set_clap_search_paths(std::vector<std::string> pa
     return {};
 }
 
+base::Result<void> CoreFacade::remember_window(int width, int height, bool maximized) {
+    m_preferences.set_window(width, height, maximized);
+    return m_preferences.save();
+}
+
+base::Result<void> CoreFacade::set_ui_layout(nlohmann::json layout) {
+    m_preferences.set_ui_layout(std::move(layout));
+    return m_preferences.save();
+}
+
 std::string CoreFacade::metronome_output_id() const {
     const auto& chosen = m_preferences.metronome_output();
     if (!chosen.empty()) return chosen;

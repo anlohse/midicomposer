@@ -220,6 +220,13 @@ public:
      */
     base::Result<void> set_metronome_output(const std::string& id);
 
+    /** Remembers what the interface asked to have remembered, and writes it. */
+    base::Result<void> set_ui_layout(nlohmann::json layout);
+
+    /** Remembers how big the window was. Called once, as it closes: the facade
+        stays the only thing that writes preferences. */
+    base::Result<void> remember_window(int width, int height, bool maximized);
+
     /** The output the metronome actually clicks through, default resolved. */
     [[nodiscard]] std::string metronome_output_id() const;
 

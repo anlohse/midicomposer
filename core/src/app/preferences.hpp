@@ -3,6 +3,8 @@
 #include "base/error.hpp"
 #include "playback/output_plugin.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
 #include <map>
 #include <string>
@@ -132,11 +134,51 @@ public:
     }
 
     /** Serialise and parse, exposed so both directions can be tested alone. */
+    /**
+     * How big the window was, and whether it was maximized.
+     *
+     * Typed and core-owned, because the shell is what sets it and the shell has
+     * no business parsing a blob to find out. Zero width means nothing has been
+     * remembered yet, which is different from a window someone deliberately
+     * made small.
+     *
+     * Not position: the window library this application uses exposes size and
+     * the maximized flag and no way to ask where the window is, so remembering
+     * a place it cannot be put back would be a preference that does nothing.
+     */
+    [[nodiscard]] int window_width() const { return m_window_width; }
+    [[nodiscard]] int window_height() const { return m_window_height; }
+    [[nodiscard]] bool window_maximized() const { return m_window_maximized; }
+    void set_window(int width, int height, bool maximized) {
+        m_window_width = width;
+        m_window_height = height;
+        m_window_maximized = maximized;
+    }
+
+    /**
+     * Whatever the interface wants to remember about its own layout.
+     *
+     * Opaque here on purpose: which panels are collapsed and whether the ruler
+     * is showing are the interface's business, and a typed field per toggle
+     * would mean a change down here every time a panel gains a button. The
+     * core stores it and hands it back.
+     *
+     * In the preferences rather than in browser storage so it survives the
+     * webview profile being cleared, and so one file holds everything this
+     * installation remembers.
+     */
+    [[nodiscard]] const nlohmann::json& ui_layout() const { return m_ui_layout; }
+    void set_ui_layout(nlohmann::json layout) { m_ui_layout = std::move(layout); }
+
     [[nodiscard]] std::string to_json() const;
     void from_json(const std::string& text);
 
 private:
     std::filesystem::path m_path;
+    int  m_window_width{0};
+    int  m_window_height{0};
+    bool m_window_maximized{false};
+    nlohmann::json m_ui_layout = nlohmann::json::object();
     std::string m_selected_output;
     std::string m_metronome_output;
     std::map<std::string, std::map<std::string, playback::ParameterValue>> m_parameters;

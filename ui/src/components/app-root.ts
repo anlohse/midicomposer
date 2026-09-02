@@ -30,6 +30,17 @@ export class AppRoot extends LitElement {
     @state() private documents: DocumentSnapshot[] = [];
     @state() private activeDocumentId: number | null = null;
     
+    // ── Remembered layout ────────────────────────────────────────────────
+    //
+    // Which panels are collapsed and whether the ruler shows are the only
+    // things here worth surviving a restart: they are decisions about the
+    // workspace rather than about the music, and re-making them every launch
+    // is the kind of friction nobody reports and everybody feels.
+    //
+    // Kept in the preferences file rather than in browser storage, so it
+    // survives the webview profile being cleared and one file holds everything
+    // this installation remembers. The core treats it as opaque, which is why
+    // adding a fourth toggle needs no change in C++.
     @state() private mixerCollapsed = false;
     @state() private eventsCollapsed = false;
     @state() private activeTool: ScoreTool = 'select';
@@ -44,6 +55,10 @@ export class AppRoot extends LitElement {
     @state() private tripletMode = false;
     @state() private zoom = 1;
     @state() private showRuler = true;
+
+    /** Nothing is written back before what was stored has been read, or the
+        defaults would overwrite it on the way up. */
+    private layoutRestored = false;
     @state() private activeMode: ScoreMode = 'edit';
     /** Which menu is dropped down, if any. */
     @state() private openMenu: 'file' | 'edit' | 'help' | null = null;
@@ -314,9 +329,48 @@ export class AppRoot extends LitElement {
 
     connectedCallback() {
         super.connectedCallback();
+        void this.restoreLayout();
         // Capture phase: the score view also listens for Escape (to clear its
         // selection) and registers first, so bubbling would reach it either way.
         window.addEventListener('keydown', this.handleMenuKey, true);
+    }
+
+    /**
+     * Reads the remembered layout, once, at startup.
+     *
+     * Failure leaves the defaults standing: a preferences file that cannot be
+     * read is worth a line in the log, which the core already writes, and not
+     * worth refusing to open the window over.
+     */
+    private async restoreLayout() {
+        try {
+            const prefs = await CoreBridge.sendCommand<{ uiLayout?: Record<string, unknown> }>(
+                'get_preferences');
+            const layout = prefs?.uiLayout;
+            if (layout) {
+                if (typeof layout.mixerCollapsed === 'boolean') this.mixerCollapsed = layout.mixerCollapsed;
+                if (typeof layout.eventsCollapsed === 'boolean') this.eventsCollapsed = layout.eventsCollapsed;
+                if (typeof layout.showRuler === 'boolean') this.showRuler = layout.showRuler;
+            }
+        } catch (err) {
+            console.error('Failed to read the remembered layout', err);
+        } finally {
+            // Even on failure: the defaults are now what the person sees, so
+            // the next thing they collapse is worth remembering.
+            this.layoutRestored = true;
+        }
+    }
+
+    /** Writes it back when it changes. */
+    private saveLayout() {
+        if (!this.layoutRestored) return;
+        void CoreBridge.sendCommand('set_ui_layout', {
+            layout: {
+                mixerCollapsed: this.mixerCollapsed,
+                eventsCollapsed: this.eventsCollapsed,
+                showRuler: this.showRuler,
+            },
+        }).catch(err => console.error('Failed to remember the layout', err));
     }
 
     disconnectedCallback() {
@@ -569,7 +623,7 @@ export class AppRoot extends LitElement {
                         @grid-change=${(e: CustomEvent) => { this.activeGrid = e.detail.grid; }}
                         @snap-toggle=${(e: CustomEvent) => { this.snapEnabled = e.detail.enabled; }}
                         @triplet-toggle=${(e: CustomEvent) => { this.tripletMode = e.detail.triplet; }}
-                        @ruler-toggle=${(e: CustomEvent) => { this.showRuler = e.detail.showRuler; }}
+                        @ruler-toggle=${(e: CustomEvent) => { this.showRuler = e.detail.showRuler; this.saveLayout(); }}
                         @zoom-step=${(e: CustomEvent) => { this.zoom = clampZoom(this.zoom * e.detail.factor); }}
                         @zoom-set=${(e: CustomEvent) => { this.zoom = clampZoom(e.detail.zoom); }}
                         @mode-change=${(e: CustomEvent) => { this.activeMode = e.detail.mode; }}
@@ -595,7 +649,7 @@ export class AppRoot extends LitElement {
                 <div class="mixer-area">
                     <div class="panel-header">
                         Mixer
-                        <span class="collapse-btn" @click=${() => this.mixerCollapsed = !this.mixerCollapsed}>
+                        <span class="collapse-btn" @click=${() => { this.mixerCollapsed = !this.mixerCollapsed; this.saveLayout(); }}>
                             ${this.mixerCollapsed ? '«' : '»'}
                         </span>
                     </div>
@@ -604,7 +658,7 @@ export class AppRoot extends LitElement {
                 <div class="events-area">
                     <div class="panel-header">
                         MIDI Events
-                        <span class="collapse-btn" @click=${() => this.eventsCollapsed = !this.eventsCollapsed}>
+                        <span class="collapse-btn" @click=${() => { this.eventsCollapsed = !this.eventsCollapsed; this.saveLayout(); }}>
                             ${this.eventsCollapsed ? '▲' : '▼'}
                         </span>
                     </div>
