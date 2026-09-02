@@ -364,3 +364,65 @@ TEST_CASE("a sample long enough to hold a pitch gets one") {
     // for them, which is the thing this is meant to stop doing.
     CHECK(placed * 100 / longs >= 85);
 }
+
+TEST_CASE("the same programs sound at a device block size and a render one") {
+    const auto files = files_with(".sf2");
+    if (files.empty()) {
+        MESSAGE("No .sf2 found; set MC_BANK_DIR to run this against real banks");
+        return;
+    }
+    std::string chosen;
+    for (const auto& file : files) {
+        if (file.find("Expressive") != std::string::npos) chosen = file;
+    }
+    if (chosen.empty()) {
+        MESSAGE("ExpressiveSNES.sf2 not present; this one is about that bank");
+        return;
+    }
+    const auto bank = io::load_sf2(chosen);
+    REQUIRE(bank.has_value());
+
+    // Live playback renders in whatever period the device asks for -- 480
+    // frames here -- and an offline render uses 64. Everything verified about
+    // this bank so far went through the offline path, and the report was that
+    // the application sounds different from the file it writes.
+    auto peak_for = [&](int program, int key, int velocity, int block_frames) {
+        playback::Spc700Output out;
+        out.set_sample_rate(48000);
+        out.set_bank(std::shared_ptr<const playback::SampleBank>(*bank));
+        REQUIRE(out.start().has_value());
+
+        const int64_t base = 1'000'000;   // a clock that did not start at zero
+        out.program_change(0, static_cast<uint8_t>(program), base);
+        out.note_on(0, static_cast<uint8_t>(key), static_cast<uint8_t>(velocity), base);
+
+        std::vector<float> buffer(static_cast<size_t>(block_frames) * 2);
+        float peak = 0.0f;
+        const double block_us = 1'000'000.0 * block_frames / 48000.0;
+        for (int b = 0; b < 40; ++b) {
+            out.begin_block(base + static_cast<int64_t>(b * block_us));
+            out.render(buffer.data(), block_frames);
+            for (float f : buffer) peak = std::max(peak, std::abs(f));
+        }
+        return peak;
+    };
+
+    struct Case { int program; int key; int velocity; const char* name; };
+    const Case cases[] = {
+        {0,   60, 100, "Piano"},        {3,  48, 105, "Honky-tonk"},
+        {47,  36, 112, "Timpani"},      {116, 38, 112, "Taiko"},
+        {115, 84, 100, "Wood Block"},   {73,  86, 100, "Flute"},
+        {71,  50, 105, "Clarinet"},     {68,  69, 100, "Oboe"},
+        {48,  55, 100, "Strings"},      {45,  48, 108, "Pizzicato"},
+    };
+
+    for (const auto& c : cases) {
+        const float device = peak_for(c.program, c.key, c.velocity, 480);
+        const float render = peak_for(c.program, c.key, c.velocity, 64);
+        MESSAGE(c.name, " (program ", c.program + 1, "): 480-frame blocks ", device,
+                ", 64-frame blocks ", render);
+        CAPTURE(c.name);
+        CHECK(device > 0.001f);
+        CHECK(render > 0.001f);
+    }
+}
