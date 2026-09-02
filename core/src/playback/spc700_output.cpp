@@ -240,7 +240,11 @@ double Spc700Output::rate_for(const Sample& sample, const Zone& zone, uint8_t pi
                              static_cast<double>(zone.root_key) +
                              zone.fine_tune_cents / 100.0;
     const double ratio = std::pow(2.0, semitones / 12.0);
-    return ratio * static_cast<double>(sample.source_rate) / m_sample_rate;
+    // A bank is data, and data can be wrong: a rate of zero would stall the
+    // voice on one frame forever and a negative one would walk it backwards.
+    const double source = sample.source_rate > 0 ? static_cast<double>(sample.source_rate)
+                                                 : static_cast<double>(m_sample_rate);
+    return ratio * source / m_sample_rate;
 }
 
 void Spc700Output::reset_voices() {
@@ -357,6 +361,13 @@ float Spc700Output::sample_at(const Sample& sample, double position) {
     const auto& data = sample.data;
     const int n = static_cast<int>(data.size());
     if (n == 0) return 0.0f;
+
+    // Never before the first frame. The indices below are clamped anyway, but
+    // a negative position leaves a negative fraction, and casting that to an
+    // unsigned index is undefined rather than merely wrong. Cheap insurance on
+    // the one thread where a mistake is heard as a click and debugged as a
+    // mystery.
+    if (position < 0.0) position = 0.0;
 
     const int i1 = static_cast<int>(position);
     const double f = position - i1;

@@ -313,6 +313,37 @@ TEST_CASE("every real .sf2 loads") {
         MESSAGE(file, ": at most ", worst, " zones answer one note");
         CHECK(worst <= 8);
 
+        // Where a program answers nothing.
+        //
+        // A program with zones that leave a hole in the keyboard is silent on
+        // those keys and looks perfectly healthy everywhere else: the list
+        // names it, the picker offers it, and pressing the wrong note produces
+        // nothing. It is the same shape of fault as playing the wrong bank
+        // entirely, which cost an afternoon, and it is findable by machine.
+        int programs_with_gaps = 0;
+        int widest_gap = 0;
+        int example_program = -1;
+        for (int p = 0; p < 128; ++p) {
+            if (!(*bank)->has_program(p)) continue;
+            int gap = 0;
+            int longest = 0;
+            for (int key = 0; key < 128; ++key) {
+                const playback::Zone* matched[8] = {};
+                if ((*bank)->zones_for(p, key, 100, matched, 8) == 0) {
+                    longest = std::max(longest, ++gap);
+                } else {
+                    gap = 0;
+                }
+            }
+            if (longest > 0) {
+                ++programs_with_gaps;
+                if (longest > widest_gap) { widest_gap = longest; example_program = p + 1; }
+            }
+        }
+        MESSAGE(file, ": ", programs_with_gaps, " of ", programs,
+                " programs have keys nothing answers; widest run ", widest_gap,
+                " keys (program ", example_program, ")");
+
         // Looping is opt-in, and a bank where everything loops is a bank whose
         // sampleModes were ignored in favour of the loop points every sample
         // header carries. A percussion hit that loops is a drum roll.

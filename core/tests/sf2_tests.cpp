@@ -2,7 +2,10 @@
 
 #include "io/sf2_file.hpp"
 
+#include "bank_safety.hpp"
+
 #include <cstdint>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -274,6 +277,7 @@ std::string build_sf2(const FontSpec& spec) {
 
     return chunk("RIFF", "sfbk" + info_list + sdta + pdta);
 }
+
 
 } // namespace
 
@@ -722,4 +726,54 @@ TEST_CASE("zones_for stops where the caller runs out of room") {
     // Two, not three and not a write past the end: a note cannot cost more
     // voices than the chip has, and the ceiling belongs to the caller.
     CHECK((*bank)->zones_for(0, 60, 100, matched, 2) == 2);
+}
+
+// ── Damaged input ────────────────────────────────────────────────────────────
+//
+// The tests above give the loader files that follow the format. A user gives it
+// whatever is on their disk: a truncated download, a file that is not a bank at
+// all, a bank written by a tool with its own ideas. None of that may crash, and
+// none of it may produce a bank that is unsafe to play -- a zone pointing past
+// the end of the samples would be a read out of bounds on the audio thread,
+// which is the worst place to have one.
+//
+// Mutation rather than random bytes: a file that is 99% valid reaches far
+// deeper into the parser than noise does, and the counts and offsets inside it
+// are what the parser trusts. Seeded, so a failure here is a failure that can
+// be run again.
+
+TEST_CASE("a damaged SoundFont is refused or safe, never fatal") {
+    // Two zones and a full set of generators, so there is more structure to
+    // damage than a minimal font would have.
+    FontSpec spec;
+    spec.instruments = {{{ZoneSpec{.low_key = 0, .high_key = 59, .root = 48},
+                          ZoneSpec{.low_key = 60, .high_key = 127, .root = 72}}, {}}};
+    // A release of -1000 timecents, stated once for the instrument.
+    spec.instrument_global = {{54, 1}, {38, static_cast<uint16_t>(-1000)}};
+    spec.preset_zones = {{.instrument = 0, .generators = {{48, 60}, {52, 15}}}};
+    const std::string good = build_sf2(spec);
+    REQUIRE(io::parse_sf2(good, "Control").has_value());
+
+    std::mt19937 rng{20260901u};
+    int refused = 0;
+    int accepted = 0;
+    for (int i = 0; i < 600; ++i) {
+        const auto bytes = testing::damaged(good, rng, i);
+        auto bank = io::parse_sf2(bytes, "Damaged");
+        if (!bank) {
+            // Refusing is a perfectly good answer, and it has to say something.
+            CHECK_FALSE(bank.error().message.empty());
+            ++refused;
+            continue;
+        }
+        ++accepted;
+        testing::must_be_safe_to_play(**bank);
+        testing::play_briefly(*bank);
+    }
+    MESSAGE(refused, " of 600 damaged fonts refused, ", accepted,
+            " parsed into something safe to play");
+    // Both outcomes have to occur, or this is testing one branch: all-refused
+    // would mean the parser gives up too early to have been exercised.
+    CHECK(refused > 0);
+    CHECK(accepted > 0);
 }
