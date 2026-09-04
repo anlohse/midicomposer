@@ -10,6 +10,7 @@ import { CLEFS, CLEF_ORDER, clefDef } from '../../models/clef';
 import { BEND_MAX, BEND_MIN, DEFAULT_CONTROLLER, DEFAULT_CONTROLLER_VALUE,
          bendLabel, controllerName } from '../../models/midiController';
 import { fieldCoarseStep, fieldStep } from '../../models/snap';
+import { beatWeights, type TickWeight } from '../../models/timeSignature';
 import '../common/value-field';
 
 type EventKind = 'Note' | 'CC' | 'PitchBend' | 'ProgramChange';
@@ -45,6 +46,12 @@ export class MidiEventsPanel extends LitElement {
      * which is the only way to reach a position the score can now place.
      */
     @property({ type: Number }) snapTicks = 0;
+    /**
+     * Note ids selected in the score view, mirrored here so the same notes are
+     * marked in both places — the panel is a second view of one selection, not
+     * a selection of its own, and it has no way to change it.
+     */
+    @property({ attribute: false }) selectedNoteIds: readonly string[] = [];
 
     // Which track's events are listed, and whose parameters the header edits.
     @state() private trackFilter = ALL_TRACKS;
@@ -56,8 +63,14 @@ export class MidiEventsPanel extends LitElement {
     // the update moved its row. See restoreFocus().
     private focusMemo: { key: string; index: number } | null = null;
 
+    // The selection as a set, rebuilt once per update rather than searched per
+    // row: the panel lists every event in the document and the selection can be
+    // every note in it.
+    private selected: ReadonlySet<string> = new Set();
+
     willUpdate() {
         this.focusMemo = this.findFocusedCell();
+        this.selected = new Set(this.selectedNoteIds);
     }
 
     updated() {
@@ -184,6 +197,23 @@ export class MidiEventsPanel extends LitElement {
         }
         tr:hover { background: #262829; }
         tr:hover td { color: #fff; }
+
+        /* Barlines. The list is sorted by tick, so a rule above the first row of
+           a bar reads as the same boundary the score draws, and a fainter one
+           marks the beats inside it. Both are drawn as a top border on the
+           cells: with border-collapse the row's own edge is what a border on
+           <tr> would land on, and Chromium does not paint that. */
+        tr.bar-start > td  { border-top: 1px solid #5c6472; }
+        tr.beat-start > td { border-top: 1px solid #383c42; }
+
+        /* Selected in the score view. The same blue the score paints a selected
+           note head with, so one glance ties the two together. */
+        tr.selected > td { background: #0d2a45; }
+        tr.selected > td:first-child {
+            color: #cfe6ff;
+            box-shadow: inset 2px 0 0 #4da6ff;
+        }
+        tr.selected:hover > td { background: #123457; }
         .type-note { color: #4ec9b0; }
         .type-cc   { color: #dcdcaa; }
         .type-pb   { color: #c586c0; }
@@ -553,17 +583,30 @@ export class MidiEventsPanel extends LitElement {
         }
     }
 
-    private renderRow(ev: PanelEvent) {
+    /**
+     * Classes carrying where the row opens in the bar, and whether the score
+     * view has its note selected.
+     */
+    private rowClass(ev: PanelEvent, weight: TickWeight): string {
+        const classes: string[] = [];
+        if (weight === 'bar') classes.push('bar-start');
+        else if (weight === 'beat') classes.push('beat-start');
+        if (ev.kind === 'Note' && this.selected.has(ev.noteId!)) classes.push('selected');
+        return classes.join(' ');
+    }
+
+    private renderRow(ev: PanelEvent, weight: TickWeight) {
         const ppqn = this.doc?.ppqn ?? 480;
         const tickStep = fieldStep(this.snapTicks);
         const coarseStep = fieldCoarseStep(this.snapTicks, ppqn);
+        const rowClass = this.rowClass(ev, weight);
 
         // A program change is the track's instrument, edited through the
         // selector in the bar above; editing it here as a raw number would give
         // two controls for one thing that could disagree.
         if (ev.kind === 'ProgramChange') {
             return html`
-                <tr data-key=${this.eventKey(ev)}>
+                <tr data-key=${this.eventKey(ev)} class=${rowClass}>
                     <td class="read-only">${ev.tick}</td>
                     <td class="read-only">${ev.trackName}</td>
                     <td class="type-pc">Program</td>
@@ -578,7 +621,7 @@ export class MidiEventsPanel extends LitElement {
         if (ev.kind === 'CC' || ev.kind === 'PitchBend') {
             const isCC = ev.kind === 'CC';
             return html`
-                <tr data-key=${this.eventKey(ev)}>
+                <tr data-key=${this.eventKey(ev)} class=${rowClass}>
                     <td>
                         <mc-value-field label="Tick"
                             .value=${ev.tick} .min=${0} .max=${100_000_000}
@@ -627,7 +670,7 @@ export class MidiEventsPanel extends LitElement {
         }
 
         return html`
-            <tr data-key=${this.eventKey(ev)}>
+            <tr data-key=${this.eventKey(ev)} class=${rowClass}>
                 <td>
                     <mc-value-field label="Start tick"
                         .value=${ev.tick} .min=${0} .max=${100_000_000}
@@ -679,6 +722,10 @@ export class MidiEventsPanel extends LitElement {
     render() {
         if (!this.doc) return html`<div class="empty">No document</div>`;
         const events = this.collectEvents();
+        // Sorted by tick above, which is what lets one walk of the meter map
+        // answer for the whole list.
+        const weights = beatWeights(this.doc.timeSignatureMap, this.doc.ppqn,
+                                    events.map(ev => ev.tick));
 
         return html`
             ${this.renderTrackBar()}
@@ -703,7 +750,8 @@ export class MidiEventsPanel extends LitElement {
                          repeat would rebind the focused field to a different
                          event, so further arrow presses would edit the wrong
                          note. Keying makes Lit move the row instead. -->
-                    <tbody>${repeat(events, ev => this.eventKey(ev), ev => this.renderRow(ev))}</tbody>
+                    <tbody>${repeat(events, ev => this.eventKey(ev),
+                                    (ev, i) => this.renderRow(ev, weights[i]))}</tbody>
                 </table>
                 ${events.length === 0 ? html`<div class="empty">No events on this track.</div>` : ''}
             </div>

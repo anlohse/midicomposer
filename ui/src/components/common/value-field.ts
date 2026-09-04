@@ -134,6 +134,23 @@ export class ValueField extends LitElement {
         }
     }
 
+    /**
+     * The wheel steps the value, but only once the field has been clicked into.
+     *
+     * Unfocused it stays a number in a table, and the wheel has to keep
+     * scrolling the list — a row that quietly ate the gesture and edited a note
+     * on the way past would be worse than useless. Focused, the step is the same
+     * one the arrows use, which for a tick or a duration is the snap resolution,
+     * so rolling the wheel walks the grid the score view snaps to.
+     */
+    private onWheel(e: WheelEvent) {
+        if (!this.focused || this.disabled) return;
+        const delta = e.deltaY || e.deltaX;
+        if (!delta) return;
+        e.preventDefault();
+        this.setPending(this.current + (e.shiftKey ? this.coarse : this.step) * (delta < 0 ? 1 : -1));
+    }
+
     private onInput(e: Event) {
         const raw = (e.target as HTMLInputElement).value;
         if (raw === '') return;               // mid-typing, wait for a number
@@ -151,6 +168,7 @@ export class ValueField extends LitElement {
                    min=${this.min} max=${this.max} step=${this.step}
                    ?disabled=${this.disabled}
                    @keydown=${this.onKeyDown}
+                   @wheel=${this.onWheel}
                    @input=${this.onInput}
                    @focus=${() => { this.focused = true; }}
                    @blur=${() => { this.focused = false; this.flush(); this.pending = null; }}>

@@ -1276,7 +1276,19 @@ export class ScoreView extends LitElement {
         this.trackEditorNeedsFocus = true;
     }
 
-    updated() {
+    updated(changed: Map<string, unknown>) {
+        // The events panel marks the same notes, so it has to hear about every
+        // change of selection — including the ones nobody clicked for, like the
+        // notes a paste selects or the emptying after a delete. Reported from
+        // here rather than from the dozen places that assign it: the selection
+        // is always replaced with a new set, never mutated, so one notification
+        // per update covers all of them and cannot go stale.
+        if (changed.has('selection')) {
+            this.dispatchEvent(new CustomEvent<{ noteIds: string[] }>('selection-change', {
+                detail: { noteIds: [...this.selection] }, bubbles: true, composed: true,
+            }));
+        }
+
         if (this.trackEditorNeedsFocus && this.trackNameEditor) {
             this.trackEditorNeedsFocus = false;
             this.trackNameEditor.focus();

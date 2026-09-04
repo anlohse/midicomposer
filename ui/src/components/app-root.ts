@@ -70,6 +70,11 @@ export class AppRoot extends LitElement {
     @state() private transposeUnit: 'semitones' | 'octaves' = 'semitones';
     @state() private transposeAmount = 1;
 
+    // Mirrored from the score view so the events panel can mark the same notes.
+    // Held here rather than read from the view on demand: the panel has to
+    // re-render when it changes, and only a property can make that happen.
+    @state() private selectedNoteIds: string[] = [];
+
     @query('mc-score-view') private scoreView?: ScoreView;
 
     static styles = [
@@ -643,7 +648,9 @@ export class AppRoot extends LitElement {
                         .showRuler=${this.showRuler}
                         .zoom=${this.zoom}
                         .mode=${this.activeMode}
-                        @zoom-change=${(e: CustomEvent) => { this.zoom = e.detail.zoom; }}>
+                        @zoom-change=${(e: CustomEvent) => { this.zoom = e.detail.zoom; }}
+                        @selection-change=${(e: CustomEvent<{ noteIds: string[] }>) => {
+                            this.selectedNoteIds = e.detail.noteIds; }}>
                     </mc-score-view>
                 </div>
                 <div class="mixer-area">
@@ -663,6 +670,7 @@ export class AppRoot extends LitElement {
                         </span>
                     </div>
                     ${!this.eventsCollapsed ? html`<mc-midi-events-panel .doc=${doc}
+                        .selectedNoteIds=${this.selectedNoteIds}
                         .snapTicks=${snapTicks(this.snapEnabled, this.activeGrid,
                                                this.activeDuration, doc.ppqn,
                                                this.tripletMode)}></mc-midi-events-panel>` : ''}

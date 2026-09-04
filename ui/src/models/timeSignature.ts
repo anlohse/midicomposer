@@ -52,6 +52,72 @@ export function measureAtTick(map: TimeSignatureSnapshot[] | undefined,
     }
 }
 
+/**
+ * Where a tick sits in its bar: on the barline, on a beat inside the bar, or
+ * between beats.
+ */
+export type TickWeight = 'bar' | 'beat' | 'off';
+
+/** Ticks in one beat — the note value the meter's denominator names. */
+export function beatTicks(ts: { denominator: number }, ppqn: number): number {
+    return Math.max(1e-9, ppqn * 4 / ts.denominator);
+}
+
+/**
+ * Marks, for each tick of an ascending list, whether it opens a new bar, a new
+ * beat inside the same bar, or neither.
+ *
+ * Openings rather than exact positions, because the caller is drawing rules
+ * between rows of a list. Nothing guarantees an event sits exactly on a
+ * barline, and asking only about exact hits would leave a bar with no events on
+ * its downbeat looking like a continuation of the one before. Ticks that repeat
+ * — several events at one moment — open nothing after the first, so a chord
+ * gets a line above it and not a band through it.
+ *
+ * The list is walked in order, which is what keeps this linear: the single-tick
+ * helpers each search from bar one, and calling them per row turns a long
+ * import into a quadratic render. A tick that goes backwards is still answered
+ * correctly, just by paying for that search.
+ *
+ * Beats are counted from the bar they are in, not from tick zero, so a bar of
+ * 7/8 does not push every later beat off the grid.
+ */
+export function beatWeights(map: TimeSignatureSnapshot[] | undefined,
+                            ppqn: number, ticks: readonly number[]): TickWeight[] {
+    let bar: MeasureInfo | null = null;
+    let previous: { barIndex: number; beatIndex: number } | null = null;
+
+    return ticks.map(tick => {
+        if (!bar || tick < bar.startTick) {
+            bar = measureAtTick(map, ppqn, tick);
+        } else {
+            // Forward from where the last one landed, which is usually the same
+            // bar or the next one.
+            let guard = 0;
+            while (tick >= bar.startTick + bar.durationTicks && guard++ < 100_000) {
+                const from: MeasureInfo = bar;
+                const start = from.startTick + from.durationTicks;
+                const ts = timeSignatureAt(map, start);
+                bar = { index: from.index + 1, startTick: start, numerator: ts.numerator,
+                        denominator: ts.denominator, durationTicks: measureTicks(ts, ppqn) };
+            }
+        }
+
+        // A beat can begin on a fraction of a tick when the ppqn does not divide
+        // by the denominator, so a small tolerance keeps a tick that is a hair
+        // under the boundary from being counted into the beat before it.
+        const beatIndex = Math.floor((tick - bar.startTick) / beatTicks(bar, ppqn) + 1e-6);
+        const here = { barIndex: bar.index, beatIndex };
+
+        const weight: TickWeight =
+            !previous || here.barIndex !== previous.barIndex ? 'bar'
+            : here.beatIndex !== previous.beatIndex ? 'beat'
+            : 'off';
+        previous = here;
+        return weight;
+    });
+}
+
 /** "6/8", for labels. */
 export function formatTimeSignature(ts: { numerator: number; denominator: number }): string {
     return `${ts.numerator}/${ts.denominator}`;
